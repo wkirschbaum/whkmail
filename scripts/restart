@@ -5,4 +5,4 @@ mkdir -p bin
 go build -o bin/whkmaild ./cmd/whkmaild
 go build -o bin/whkmail  ./cmd/whkmail
 systemctl --user restart whkmaild.service
-systemctl --user status whkmaild.service --no-pager
+exec bin/whkmail
