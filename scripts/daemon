@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+mkdir -p bin
+go build -o bin/whkmaild ./cmd/whkmaild
+
+pkill -f 'bin/whkmaild' 2>/dev/null || true
+sleep 0.2
+
+exec bin/whkmaild

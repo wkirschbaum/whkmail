@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DB="${XDG_STATE_HOME:-$HOME/.local/state}/whkmail/whkmail.db"
+
+if [[ ! -f "$DB" ]]; then
+  echo "no database yet: $DB"
+  exit 1
+fi
+
+if [[ $# -gt 0 ]]; then
+  exec sqlite3 "$DB" "$@"
+fi
+
+# Default: show a quick summary.
+sqlite3 "$DB" <<'SQL'
+.mode column
+.headers on
+SELECT name, message_count, unread FROM folders ORDER BY name;
+SELECT '---' AS '---', '' AS '', '' AS '';
+SELECT folder, from_addr, subject, datetime(date, 'unixepoch') AS date
+FROM messages ORDER BY date DESC LIMIT 20;
+SQL

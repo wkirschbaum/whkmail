@@ -1,0 +1,25 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose      # unclosed HTTP response bodies
+    - exhaustive     # missing switch cases on enums
+    - gochecknoinits # no init() functions
+    - godot          # comments end with a period
+    - misspell       # spelling errors
+    - nilerr         # returning nil alongside a non-nil error
+    - noctx          # HTTP requests without context
+    - unconvert      # unnecessary type conversions
+    - unparam        # unused function parameters
+    - wastedassign   # assignments whose value is never used
+
+linters-settings:
+  exhaustive:
+    default-signifies-exhaustive: true
+  godot:
+    scope: declarations
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters: [errcheck, unparam]
