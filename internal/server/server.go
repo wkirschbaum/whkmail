@@ -1,45 +1,30 @@
+// Package server exposes the daemon's in-memory account registry and the
+// HTTP handlers that read / mutate it. The lifecycle (Serve) and the body-
+// fetch worker live here; registration + lookup are in state.go; the HTTP
+// handlers are in handlers.go.
 package server
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/wkirschbaum/whkmail/internal/dirs"
 	"github.com/wkirschbaum/whkmail/internal/events"
-	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
-// MailStore is the persistence interface required by the HTTP handlers.
-type MailStore interface {
-	ListFolders(ctx context.Context) ([]types.Folder, error)
-	ListMessages(ctx context.Context, folder string, limit int) ([]types.Message, error)
-	GetMessage(ctx context.Context, folder string, uid uint32) (*types.Message, error)
-}
-
-// State is shared between all HTTP handlers.
-type State struct {
-	Store   MailStore
-	Bus     *events.Bus
-	Syncing atomic.Bool
-}
-
+// Serve binds the Unix socket, starts the background goroutines, and blocks
+// until ctx is cancelled.
 func Serve(ctx context.Context, st *State) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /status", st.HandleStatus)
-	mux.HandleFunc("GET /folders/{folder}/messages", st.HandleMessages)
-	mux.HandleFunc("GET /folders/{folder}/messages/{uid}", st.HandleMessage)
-	mux.HandleFunc("GET /events", st.handleSSE)
+	go st.trackSyncState(ctx)
+	go st.Worker(ctx)
+
+	mux := BuildMux(st)
 
 	sockPath := dirs.SocketFile()
-	// Remove any stale socket left by a previous crash.
 	_ = os.Remove(sockPath)
 
 	lc := net.ListenConfig{}
@@ -71,83 +56,87 @@ func Serve(ctx context.Context, st *State) error {
 	return nil
 }
 
-func (st *State) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	folders, err := st.Store.ListFolders(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, types.StatusResponse{
-		Syncing: st.Syncing.Load(),
-		Folders: folders,
-	})
-}
-
-func (st *State) HandleMessages(w http.ResponseWriter, r *http.Request) {
-	folder := r.PathValue("folder")
-	msgs, err := st.Store.ListMessages(r.Context(), folder, 50)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, types.MessagesResponse{Folder: folder, Messages: msgs, Total: len(msgs)})
-}
-
-func (st *State) HandleMessage(w http.ResponseWriter, r *http.Request) {
-	folder := r.PathValue("folder")
-	uid, err := strconv.ParseUint(r.PathValue("uid"), 10, 32)
-	if err != nil {
-		http.Error(w, "invalid uid", http.StatusBadRequest)
-		return
-	}
-	msg, err := st.Store.GetMessage(r.Context(), folder, uint32(uid))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if msg == nil {
-		http.NotFound(w, r)
-		return
-	}
-	writeJSON(w, types.MessageResponse{Message: *msg})
-}
-
-// handleSSE streams events to the TUI as newline-delimited JSON.
-func (st *State) handleSSE(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	ch := st.Bus.Subscribe(32)
-	defer st.Bus.Unsubscribe(ch)
-
-	rc := http.NewResponseController(w)
-	enc := json.NewEncoder(w)
-
+// trackSyncState watches the bus and toggles each account's `syncing` flag
+// so /status reports accurate live state without polling the IMAP client.
+func (st *State) trackSyncState(ctx context.Context) {
+	eventCh := st.Bus.Subscribe(32)
+	defer st.Bus.Unsubscribe(eventCh)
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
-		case e, ok := <-ch:
+		case e, ok := <-eventCh:
 			if !ok {
 				return
 			}
-			// Write errors mean the client disconnected; let the context handle cleanup.
-			//nolint:errcheck
-			fmt.Fprint(w, "data: ")
-			//nolint:errcheck
-			enc.Encode(e)
-			//nolint:errcheck
-			fmt.Fprint(w, "\n")
-			//nolint:errcheck
-			rc.Flush()
+			ac := st.lookupAccount(e.Account)
+			if ac == nil {
+				continue
+			}
+			switch e.Kind {
+			case events.KindSyncStarted:
+				ac.syncing.Store(true)
+			case events.KindSyncDone:
+				ac.syncing.Store(false)
+			}
 		}
 	}
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	//nolint:errcheck
-	json.NewEncoder(w).Encode(v)
+// Worker is the background goroutine that fetches message bodies on demand.
+// Mark-as-read is intentionally *not* triggered here — the TUI drives that
+// explicitly via POST /read after the user has kept a message open long enough.
+// It publishes KindBodyReady when a fetch completes so the TUI can update
+// without polling. Exported so integration tests can drive it directly.
+func (st *State) Worker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case j, ok := <-st.jobs:
+			if !ok {
+				return
+			}
+			st.Bus.Publish(st.runBodyFetch(j))
+		}
+	}
 }
 
+// runBodyFetch executes one body-fetch job and returns the event to publish.
+// Always returns an event (success or failure) so a TUI waiting on the body
+// never hangs on a silently-dropped job.
+func (st *State) runBodyFetch(j job) events.Event {
+	ev := events.Event{
+		Kind:    events.KindBodyReady,
+		Account: j.account,
+		Folder:  j.folder,
+		UID:     j.uid,
+	}
+	ac := st.lookupAccount(j.account)
+	switch {
+	case ac == nil:
+		ev.Error = "unknown account"
+	case ac.provider == nil:
+		ev.Error = "no provider configured"
+	default:
+		fetchCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		_, err := ac.provider.FetchBody(fetchCtx, j.folder, j.uid)
+		cancel()
+		if err != nil {
+			slog.Warn("worker: fetch body", "account", j.account, "uid", j.uid, "err", err)
+			ev.Error = err.Error()
+		}
+	}
+	return ev
+}
+
+// enqueueBodyFetch hands a fetch request to the worker queue. Drops with a
+// log line if the buffer is full — under normal load the queue drains faster
+// than the TUI can request, so this should only happen during extreme bursts.
+func (st *State) enqueueBodyFetch(account, folder string, uid uint32) {
+	select {
+	case st.jobs <- job{account: account, folder: folder, uid: uid}:
+	default:
+		slog.Warn("job queue full, dropping fetch", "account", account, "uid", uid)
+	}
+}

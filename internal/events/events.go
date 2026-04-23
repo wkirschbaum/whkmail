@@ -6,16 +6,21 @@ type Kind string
 
 const (
 	KindNewMessage  Kind = "new_message"
+	KindBodyReady   Kind = "body_ready"
 	KindSyncStarted Kind = "sync_started"
 	KindSyncDone    Kind = "sync_done"
 )
 
 type Event struct {
 	Kind    Kind   `json:"kind"`
+	Account string `json:"account,omitempty"`
 	Folder  string `json:"folder,omitempty"`
 	UID     uint32 `json:"uid,omitempty"`
 	Subject string `json:"subject,omitempty"`
 	From    string `json:"from,omitempty"`
+	// Error carries a human-readable failure reason for terminal events
+	// (e.g. KindBodyReady when the background fetch failed). Empty on success.
+	Error string `json:"error,omitempty"`
 }
 
 // Bus is a simple fan-out broadcaster. Subscribers receive all events

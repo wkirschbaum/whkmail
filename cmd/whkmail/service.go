@@ -66,7 +66,7 @@ func installLaunchd(daemonPath string) error {
 
 	label := "com.whkmail.daemon"
 	// Unload first in case it was previously loaded (upgrade path).
-	_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", os.Getuid()), plistFile).Run() //nolint:noctx
+	_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", os.Getuid()), plistFile).Run()                                       //nolint:noctx
 	if out, err := exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistFile).CombinedOutput(); err != nil { //nolint:noctx
 		return fmt.Errorf("launchctl bootstrap %s: %w\n%s", label, err, out)
 	}

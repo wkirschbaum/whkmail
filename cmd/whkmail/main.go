@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wkirschbaum/whkmail/internal/dirs"
 	"github.com/wkirschbaum/whkmail/internal/tui"
+	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
 func main() {
@@ -27,8 +29,10 @@ func main() {
 			err = runSetup(ctx)
 		case "auth":
 			err = runAuth(ctx)
+		case "remove":
+			err = runRemove(ctx, os.Args[2:])
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command: %s\n\nUsage: whkmail [setup|auth]\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n\nUsage: whkmail [setup|auth|remove]\n", os.Args[1])
 			os.Exit(1)
 		}
 		if err != nil {
@@ -44,13 +48,28 @@ func main() {
 	}
 
 	client := tui.NewClient()
-	m := tui.NewModel(client)
+	m := tui.NewModel(client, loadMarkReadDelay())
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// loadMarkReadDelay reads the mark-read delay from config.json. Missing or
+// invalid config falls back to types.DefaultMarkReadDelay so the TUI still
+// behaves sensibly before the user has written a config file.
+func loadMarkReadDelay() time.Duration {
+	b, err := os.ReadFile(dirs.ConfigFile())
+	if err != nil {
+		return types.DefaultMarkReadDelay
+	}
+	var cfg types.Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return types.DefaultMarkReadDelay
+	}
+	return cfg.MarkReadDelay()
 }
 
 func ensureDaemon() error {
@@ -88,7 +107,8 @@ func startDaemon() error {
 	// Prefer the platform service manager so the daemon stays under its supervision.
 	switch runtime.GOOS {
 	case "linux":
-		svcFile := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user", "whkmaild.service")
+		home, _ := os.UserHomeDir()
+		svcFile := filepath.Join(home, ".config", "systemd", "user", "whkmaild.service")
 		if _, err := os.Stat(svcFile); err == nil {
 			//nolint:noctx
 			if err := exec.Command("systemctl", "--user", "start", "whkmaild.service").Run(); err == nil {

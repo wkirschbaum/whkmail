@@ -9,11 +9,26 @@ import (
 
 	"github.com/wkirschbaum/whkmail/internal/dirs"
 	"github.com/wkirschbaum/whkmail/internal/events"
+	"github.com/wkirschbaum/whkmail/internal/imap"
 	"github.com/wkirschbaum/whkmail/internal/notify"
 	"github.com/wkirschbaum/whkmail/internal/server"
-	"github.com/wkirschbaum/whkmail/internal/store"
-	mailsync "github.com/wkirschbaum/whkmail/internal/sync"
+	"github.com/wkirschbaum/whkmail/internal/storage"
 )
+
+// resolveDBPath returns the database path to use for an account.
+// Prefers the account-scoped path; falls back to the legacy single-account
+// path for existing installations so the message cache is not lost on upgrade.
+func resolveDBPath(email string) string {
+	accountDB := dirs.AccountDBFile(email)
+	if _, err := os.Stat(accountDB); err == nil {
+		return accountDB
+	}
+	if _, err := os.Stat(dirs.DBFile()); err == nil {
+		slog.Info("using legacy database", "account", email, "path", dirs.DBFile())
+		return dirs.DBFile()
+	}
+	return accountDB
+}
 
 func main() {
 	checkSetup()
@@ -28,16 +43,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := store.Open(dirs.DBFile())
+	lockF, err := acquireLock()
 	if err != nil {
-		slog.Error("open db", "err", err)
+		slog.Error("acquire lock", "err", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := db.Close(); err != nil {
-			slog.Warn("close db", "err", err)
-		}
-	}()
+	defer func() { _ = lockF.Close() }()
 
 	bus := events.NewBus()
 
@@ -48,20 +59,37 @@ func main() {
 		go notify.Run(ctx, bus, notifier)
 	}
 
-	cfg, tokenSrc, err := loadConfig(ctx)
+	accounts, err := loadConfig(ctx)
 	if err != nil {
 		slog.Error("load config/auth", "err", err)
 		os.Exit(1)
 	}
 
-	st := &server.State{Store: db, Bus: bus}
+	st := server.NewState(bus)
 
-	syncer := mailsync.New(cfg.IMAPHost, cfg.IMAPPort, cfg.Email, tokenSrc, db, bus)
-	go func() {
-		st.Syncing.Store(true)
-		syncer.Run(ctx)
-		st.Syncing.Store(false)
-	}()
+	for _, acc := range accounts {
+		accountDir := dirs.AccountStateDir(acc.config.Email)
+		if err := os.MkdirAll(accountDir, 0o700); err != nil {
+			slog.Error("create account dir", "account", acc.config.Email, "err", err)
+			os.Exit(1)
+		}
+
+		db, err := storage.OpenSQLite(resolveDBPath(acc.config.Email))
+		if err != nil {
+			slog.Error("open db", "account", acc.config.Email, "err", err)
+			os.Exit(1)
+		}
+		defer func() {
+			if err := db.Close(); err != nil {
+				slog.Warn("close db", "err", err)
+			}
+		}()
+
+		syncer := imap.New(acc.config.IMAPHost, acc.config.IMAPPort, acc.config.Email, acc.tokenFn, db, bus)
+		accCtx, accCancel := context.WithCancel(ctx)
+		st.AddAccount(acc.config.Email, db, syncer, server.WithCancel(accCancel))
+		go syncer.Run(accCtx)
+	}
 
 	if err := server.Serve(ctx, st); err != nil {
 		slog.Error("server", "err", err)

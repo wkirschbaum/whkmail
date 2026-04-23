@@ -20,7 +20,7 @@ func runSetup(ctx context.Context) error {
 	}
 	step("Config directory", dirs.ConfigDir())
 
-	credFile := dirs.ConfigDir() + "/credentials.json"
+	credFile := dirs.CredentialsFile()
 	if _, err := os.Stat(credFile); os.IsNotExist(err) {
 		fmt.Println()
 		printSetupInstructions(credFile)
@@ -37,7 +37,7 @@ func runSetup(ctx context.Context) error {
 	fmt.Println()
 
 	if _, err := os.Stat(dirs.TokenFile()); os.IsNotExist(err) {
-		if err := performOAuth(ctx, credFile); err != nil {
+		if err := performOAuth(ctx); err != nil {
 			return err
 		}
 		fmt.Println()

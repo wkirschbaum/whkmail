@@ -11,12 +11,13 @@ cmd/whkmaild/        daemon: IMAP sync, HTTP server, OAuth2 auth
 cmd/whkmail/         TUI: bubbletea app, daemon discovery
 internal/dirs/    XDG path helpers
 internal/types/   shared wire types
-internal/events/  fan-out EventBus
-internal/store/   SQLite cache (pure Go, no CGo)
-internal/sync/    IMAP sync + IDLE loop + XOAUTH2
-internal/server/  HTTP REST + SSE
+internal/events/  fan-out EventBus (Event carries optional Error field)
+internal/oauth/   Google OAuth2: scope, creds, token load/save/refresh, userinfo
+internal/storage/ Store interface + SQLite adapter (pure Go, no CGo; batch upsert)
+internal/imap/    Syncer — imap.go / sync.go / body.go / trash.go / oauth.go
+internal/server/  HTTP REST + SSE — state.go / handlers.go / server.go
 internal/notify/  desktop notifications (linux/macos build tags)
-internal/tui/     bubbletea Model, lipgloss render, HTTP client
+internal/tui/     bubbletea Model split across model / update / keys / actions / prefetch / cmds / viewport / render / client
 docs/             architecture and decision docs
 ```
 

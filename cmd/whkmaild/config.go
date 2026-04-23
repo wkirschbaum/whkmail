@@ -4,19 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
-
 	"github.com/wkirschbaum/whkmail/internal/dirs"
-	mailsync "github.com/wkirschbaum/whkmail/internal/sync"
+	"github.com/wkirschbaum/whkmail/internal/oauth"
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
-// checkSetup validates that all required config and auth files are present.
-// It prints a clear, human-readable error and exits if anything is missing.
+// checkSetup validates that the required config and auth files are present.
+// It prints human-readable errors and exits if anything is missing.
+// For multi-account setups with account-scoped credentials, these checks are
+// best-effort — per-account errors surface later in loadConfig.
 func checkSetup() {
 	missing := false
 
@@ -32,12 +30,22 @@ whkmaild: missing config file
     "email":     "you@gmail.com"
   }
 
+  Or for multiple accounts:
+
+  {
+    "accounts": [
+      {"email": "you@gmail.com", "imap_host": "imap.gmail.com", "imap_port": 993},
+      {"email": "work@gmail.com", "imap_host": "imap.gmail.com", "imap_port": 993}
+    ]
+  }
+
+  Then run:  whkmail auth
+
 `, dirs.ConfigFile())
 		missing = true
 	}
 
-	credFile := dirs.ConfigDir() + "/credentials.json"
-	if _, err := os.Stat(credFile); os.IsNotExist(err) {
+	if _, err := os.Stat(dirs.CredentialsFile()); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, `whkmaild: missing credentials.json
 
   Download your OAuth2 credentials from Google Cloud Console:
@@ -47,10 +55,12 @@ whkmaild: missing config file
 
   Then run:  whkmail auth
 
-`, credFile)
+`, dirs.CredentialsFile())
 		missing = true
 	}
 
+	// Check for any token: account-scoped tokens are tried by loadConfig, so
+	// here we only flag the case where the legacy shared token is also absent.
 	if _, err := os.Stat(dirs.TokenFile()); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, `whkmaild: not authorized yet
 
@@ -66,66 +76,38 @@ whkmaild: missing config file
 	}
 }
 
-// loadConfig reads config.json and restores the saved OAuth2 token.
-func loadConfig(ctx context.Context) (types.Config, func(context.Context) (string, error), error) {
+// loadedAccount bundles a resolved AccountConfig with its OAuth2 token function.
+type loadedAccount struct {
+	config  types.AccountConfig
+	tokenFn func(context.Context) (string, error)
+}
+
+// loadConfig reads config.json and builds a token source for each account.
+func loadConfig(ctx context.Context) ([]loadedAccount, error) {
 	raw, err := os.ReadFile(dirs.ConfigFile())
 	if err != nil {
-		return types.Config{}, nil, fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var cfg types.Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return types.Config{}, nil, fmt.Errorf("parse config: %w", err)
-	}
-	if cfg.IMAPHost == "" || cfg.IMAPPort == 0 || cfg.Email == "" {
-		return types.Config{}, nil, fmt.Errorf("config.json is missing required fields (imap_host, imap_port, email)")
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	credFile := dirs.ConfigDir() + "/credentials.json"
-	b, err := os.ReadFile(credFile)
-	if err != nil {
-		return cfg, nil, fmt.Errorf("read credentials.json: %w", err)
-	}
-	oauthCfg, err := google.ConfigFromJSON(b, mailsync.GmailIMAPScope)
-	if err != nil {
-		return cfg, nil, fmt.Errorf("parse credentials.json: %w", err)
+	accs := cfg.ResolvedAccounts()
+	if len(accs) == 0 {
+		return nil, fmt.Errorf("config.json: no accounts configured")
 	}
 
-	tok, err := loadToken()
-	if err != nil {
-		return cfg, nil, fmt.Errorf("load token: %w", err)
-	}
-
-	ts := oauthCfg.TokenSource(ctx, tok)
-	tokenFn := func(ctx context.Context) (string, error) {
-		t, err := ts.Token()
+	var loaded []loadedAccount
+	for _, acc := range accs {
+		if acc.IMAPHost == "" || acc.IMAPPort == 0 || acc.Email == "" {
+			return nil, fmt.Errorf("account %q: missing imap_host, imap_port, or email", acc.Email)
+		}
+		fn, err := oauth.TokenFn(ctx, acc.Email)
 		if err != nil {
-			return "", err
+			return nil, fmt.Errorf("account %q: %w", acc.Email, err)
 		}
-		if err := saveToken(t); err != nil {
-			slog.Warn("failed to persist refreshed token", "err", err)
-		}
-		return t.AccessToken, nil
+		loaded = append(loaded, loadedAccount{config: acc, tokenFn: fn})
 	}
-
-	return cfg, tokenFn, nil
-}
-
-func loadToken() (*oauth2.Token, error) {
-	b, err := os.ReadFile(dirs.TokenFile())
-	if err != nil {
-		return nil, err
-	}
-	var tok oauth2.Token
-	if err := json.Unmarshal(b, &tok); err != nil {
-		return nil, err
-	}
-	return &tok, nil
-}
-
-func saveToken(tok *oauth2.Token) error {
-	b, err := json.Marshal(tok)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dirs.TokenFile(), b, 0o600)
+	return loaded, nil
 }

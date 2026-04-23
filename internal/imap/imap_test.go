@@ -1,15 +1,15 @@
-package sync
+package imap
 
 import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
+	goimap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 func TestAddressString_WithName(t *testing.T) {
-	a := imap.Address{Name: "Alice Smith", Mailbox: "alice", Host: "example.com"}
+	a := goimap.Address{Name: "Alice Smith", Mailbox: "alice", Host: "example.com"}
 	got := addressString(a)
 	want := "Alice Smith <alice@example.com>"
 	if got != want {
@@ -18,7 +18,7 @@ func TestAddressString_WithName(t *testing.T) {
 }
 
 func TestAddressString_WithoutName(t *testing.T) {
-	a := imap.Address{Mailbox: "bob", Host: "example.com"}
+	a := goimap.Address{Mailbox: "bob", Host: "example.com"}
 	got := addressString(a)
 	want := "bob@example.com"
 	if got != want {
@@ -27,7 +27,7 @@ func TestAddressString_WithoutName(t *testing.T) {
 }
 
 func TestAddressString_WhitespaceName(t *testing.T) {
-	a := imap.Address{Name: "  ", Mailbox: "carol", Host: "example.com"}
+	a := goimap.Address{Name: "  ", Mailbox: "carol", Host: "example.com"}
 	got := addressString(a)
 	want := "carol@example.com"
 	if got != want {
@@ -36,15 +36,15 @@ func TestAddressString_WhitespaceName(t *testing.T) {
 }
 
 func TestContainsFlag(t *testing.T) {
-	flags := []imap.Flag{imap.FlagSeen, imap.FlagFlagged}
+	flags := []goimap.Flag{goimap.FlagSeen, goimap.FlagFlagged}
 
-	if !containsFlag(flags, imap.FlagSeen) {
+	if !containsFlag(flags, goimap.FlagSeen) {
 		t.Error("expected FlagSeen to be found")
 	}
-	if containsFlag(flags, imap.FlagDeleted) {
+	if containsFlag(flags, goimap.FlagDeleted) {
 		t.Error("expected FlagDeleted not to be found")
 	}
-	if containsFlag(nil, imap.FlagSeen) {
+	if containsFlag(nil, goimap.FlagSeen) {
 		t.Error("expected no match on nil slice")
 	}
 }
@@ -52,13 +52,13 @@ func TestContainsFlag(t *testing.T) {
 func TestMessageFromBuffer_WithEnvelope(t *testing.T) {
 	date := time.Date(2024, 3, 10, 12, 0, 0, 0, time.UTC)
 	buf := &imapclient.FetchMessageBuffer{
-		UID:   imap.UID(7),
-		Flags: []imap.Flag{imap.FlagFlagged},
-		Envelope: &imap.Envelope{
+		UID:   goimap.UID(7),
+		Flags: []goimap.Flag{goimap.FlagFlagged},
+		Envelope: &goimap.Envelope{
 			Subject: "Test subject",
 			Date:    date,
-			From:    []imap.Address{{Name: "Alice", Mailbox: "alice", Host: "x.com"}},
-			To:      []imap.Address{{Mailbox: "bob", Host: "y.com"}},
+			From:    []goimap.Address{{Name: "Alice", Mailbox: "alice", Host: "x.com"}},
+			To:      []goimap.Address{{Mailbox: "bob", Host: "y.com"}},
 		},
 	}
 	m := messageFromBuffer("INBOX", buf)
@@ -91,7 +91,7 @@ func TestMessageFromBuffer_WithEnvelope(t *testing.T) {
 
 func TestMessageFromBuffer_Seen(t *testing.T) {
 	buf := &imapclient.FetchMessageBuffer{
-		Flags: []imap.Flag{imap.FlagSeen},
+		Flags: []goimap.Flag{goimap.FlagSeen},
 	}
 	m := messageFromBuffer("INBOX", buf)
 	if m.Unread {
@@ -100,7 +100,7 @@ func TestMessageFromBuffer_Seen(t *testing.T) {
 }
 
 func TestMessageFromBuffer_NoEnvelope(t *testing.T) {
-	buf := &imapclient.FetchMessageBuffer{UID: imap.UID(1)}
+	buf := &imapclient.FetchMessageBuffer{UID: goimap.UID(1)}
 	m := messageFromBuffer("Sent", buf)
 	if m.Folder != "Sent" {
 		t.Errorf("Folder: got %q", m.Folder)

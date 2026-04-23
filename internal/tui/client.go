@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/wkirschbaum/whkmail/internal/dirs"
@@ -22,14 +23,15 @@ type Client struct {
 
 // NewClient returns a Client that connects via the whkmaild Unix socket.
 func NewClient() *Client {
-	return newClientWithTransport(unixTransport(dirs.SocketFile()))
+	return newClient("http://whkmaild", unixTransport(dirs.SocketFile()))
 }
 
-// newClientWithTransport constructs a Client with a custom transport.
-// Swap the transport here to switch from Unix socket to TCP without touching call sites.
-func newClientWithTransport(t http.RoundTripper) *Client {
+// newClient constructs a Client with a custom base URL and transport. Tests
+// point base at an httptest server; production uses the Unix socket wrapper
+// above where base is a fixed authority string.
+func newClient(base string, t http.RoundTripper) *Client {
 	return &Client{
-		base: "http://whkmaild",
+		base: base,
 		http: &http.Client{Transport: t},
 	}
 }
@@ -47,12 +49,68 @@ func (c *Client) Status(ctx context.Context) (*types.StatusResponse, error) {
 	return getJSON[types.StatusResponse](ctx, c, "/status")
 }
 
-func (c *Client) Messages(ctx context.Context, folder string) (*types.MessagesResponse, error) {
-	return getJSON[types.MessagesResponse](ctx, c, "/folders/"+folder+"/messages")
+func (c *Client) Messages(ctx context.Context, account, folder string) (*types.MessagesResponse, error) {
+	path := "/accounts/" + url.PathEscape(account) + "/folders/" + url.PathEscape(folder) + "/messages"
+	return getJSON[types.MessagesResponse](ctx, c, path)
 }
 
-func (c *Client) Message(ctx context.Context, folder string, uid uint32) (*types.MessageResponse, error) {
-	return getJSON[types.MessageResponse](ctx, c, fmt.Sprintf("/folders/%s/messages/%d", folder, uid))
+func (c *Client) Message(ctx context.Context, account, folder string, uid uint32) (*types.MessageResponse, error) {
+	path := fmt.Sprintf("/accounts/%s/folders/%s/messages/%d",
+		url.PathEscape(account), url.PathEscape(folder), uid)
+	return getJSON[types.MessageResponse](ctx, c, path)
+}
+
+// MarkRead asks the daemon to flag a message as seen.
+func (c *Client) MarkRead(ctx context.Context, account, folder string, uid uint32) error {
+	return c.post(ctx, account, folder, uid, "read")
+}
+
+// Trash moves a message to the account's Trash mailbox.
+func (c *Client) Trash(ctx context.Context, account, folder string, uid uint32) error {
+	return c.post(ctx, account, folder, uid, "trash")
+}
+
+// PermanentDelete permanently expunges a message (use from the Trash folder).
+func (c *Client) PermanentDelete(ctx context.Context, account, folder string, uid uint32) error {
+	return c.post(ctx, account, folder, uid, "delete")
+}
+
+// RemoveAccount deregisters an account from the running daemon. Cleanup of
+// on-disk state (token/DB/config) is the caller's responsibility.
+func (c *Client) RemoveAccount(ctx context.Context, account string) error {
+	path := "/accounts/" + url.PathEscape(account)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("remove account: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// post dispatches a fire-and-forget mutation on a specific message.
+func (c *Client) post(ctx context.Context, account, folder string, uid uint32, action string) error {
+	path := fmt.Sprintf("/accounts/%s/folders/%s/messages/%d/%s",
+		url.PathEscape(account), url.PathEscape(folder), uid, action)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s: HTTP %d", action, resp.StatusCode)
+	}
+	return nil
 }
 
 // StreamEvents connects to /events and sends parsed events to ch until ctx is cancelled.

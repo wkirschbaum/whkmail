@@ -1,11 +1,10 @@
-package sync
+package imap
 
 import "fmt"
 
-// GmailIMAPScopes are the OAuth2 scopes required for Gmail IMAP access.
-const GmailIMAPScope = "https://mail.google.com/"
-
 // xoauth2 implements sasl.Client for the XOAUTH2 mechanism used by Gmail IMAP.
+// The OAuth2 scope string lives in the oauth package (GmailScope) because it
+// also covers SMTP.
 type xoauth2 struct {
 	email string
 	token string

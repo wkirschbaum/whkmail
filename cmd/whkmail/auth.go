@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,23 +16,21 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 
 	"github.com/wkirschbaum/whkmail/internal/dirs"
-	mailsync "github.com/wkirschbaum/whkmail/internal/sync"
+	"github.com/wkirschbaum/whkmail/internal/oauth"
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
-
 
 // -- styles --
 
 var (
-	clrAccent  = lipgloss.Color("12")  // blue
-	clrGreen   = lipgloss.Color("10")  // green
-	clrYellow  = lipgloss.Color("11")  // yellow
-	clrMuted   = lipgloss.Color("8")   // dark grey
-	clrWhite   = lipgloss.Color("15")
-	clrRed     = lipgloss.Color("9")
+	clrAccent = lipgloss.Color("12") // blue
+	clrGreen  = lipgloss.Color("10") // green
+	clrYellow = lipgloss.Color("11") // yellow
+	clrMuted  = lipgloss.Color("8")  // dark grey
+	clrWhite  = lipgloss.Color("15")
+	clrRed    = lipgloss.Color("9")
 
 	styleBanner = lipgloss.NewStyle().
 			Bold(true).
@@ -61,8 +58,8 @@ var (
 			Foreground(clrMuted)
 
 	styleOK = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(clrGreen)
+		Bold(true).
+		Foreground(clrGreen)
 
 	styleErr = lipgloss.NewStyle().
 			Bold(true).
@@ -78,7 +75,7 @@ var (
 func runAuth(ctx context.Context) error {
 	printBanner()
 
-	credFile := dirs.ConfigDir() + "/credentials.json"
+	credFile := dirs.CredentialsFile()
 	_, err := os.Stat(credFile)
 	credsMissing := os.IsNotExist(err)
 
@@ -95,14 +92,14 @@ func runAuth(ctx context.Context) error {
 		}
 	}
 
-	return performOAuth(ctx, credFile)
+	return performOAuth(ctx)
 }
 
 // performOAuth runs the OAuth2 loopback redirect flow and saves the token.
-func performOAuth(ctx context.Context, credFile string) error {
-	b, err := os.ReadFile(credFile)
+func performOAuth(ctx context.Context) error {
+	cfg, err := oauth.LoadSharedConfig(oauth.GmailScope, oauth.UserinfoEmailScope)
 	if err != nil {
-		return fmt.Errorf("read credentials.json: %w", err)
+		return err
 	}
 
 	lc := net.ListenConfig{}
@@ -112,11 +109,6 @@ func performOAuth(ctx context.Context, credFile string) error {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
-
-	cfg, err := google.ConfigFromJSON(b, mailsync.GmailIMAPScope, "email")
-	if err != nil {
-		return fmt.Errorf("parse credentials.json: %w", err)
-	}
 	cfg.RedirectURL = redirectURI
 
 	state := randomState()
@@ -184,7 +176,7 @@ func performOAuth(ctx context.Context, credFile string) error {
 		return fmt.Errorf("exchange code: %w", err)
 	}
 
-	email, err := fetchEmail(ctx, cfg.Client(ctx, tok))
+	email, err := oauth.FetchEmail(ctx, cfg.Client(ctx, tok))
 	if err != nil {
 		fmt.Println()
 		return fmt.Errorf("fetch account email: %w", err)
@@ -197,39 +189,16 @@ func performOAuth(ctx context.Context, credFile string) error {
 	if err := os.MkdirAll(dirs.StateDir(), 0o700); err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(tok)
+	raw, err := json.Marshal(tok)
+	if err != nil {
+		return fmt.Errorf("marshal token: %w", err)
+	}
 	if err := os.WriteFile(dirs.TokenFile(), raw, 0o600); err != nil {
 		return fmt.Errorf("save token: %w", err)
 	}
 
 	printSuccess(email)
 	return nil
-}
-
-func fetchEmail(ctx context.Context, client *http.Client) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v1/userinfo", nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	var info struct {
-		Email string `json:"email"`
-	}
-	if err := json.Unmarshal(body, &info); err != nil {
-		return "", err
-	}
-	if info.Email == "" {
-		return "", fmt.Errorf("userinfo response contained no email")
-	}
-	return info.Email, nil
 }
 
 func writeConfig(email string) error {

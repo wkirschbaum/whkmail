@@ -1,0 +1,213 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"time"
+
+	"github.com/wkirschbaum/whkmail/internal/types"
+)
+
+// BuildMux wires every handler onto a fresh mux. Exposed so tests can mount
+// the same routing that Serve runs in production.
+func BuildMux(st *State) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /status", st.HandleStatus)
+	mux.HandleFunc("GET /accounts/{account}/folders/{folder}/messages", st.HandleMessages)
+	mux.HandleFunc("GET /accounts/{account}/folders/{folder}/messages/{uid}", st.HandleMessage)
+	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/read", st.HandleMarkRead)
+	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/trash", st.HandleTrash)
+	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/delete", st.HandlePermanentDelete)
+	mux.HandleFunc("DELETE /accounts/{account}", st.HandleRemoveAccount)
+	mux.HandleFunc("GET /events", st.handleSSE)
+	return mux
+}
+
+// HandleStatus lists every registered account with its folders and current
+// sync state. Called by the TUI at startup and whenever KindSyncDone fires.
+func (st *State) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	// Snapshot the accounts under the read lock so a concurrent RemoveAccount
+	// can't mutate the map mid-iteration.
+	snapshot := st.snapshotAccounts()
+
+	statuses := make([]types.AccountStatus, 0, len(snapshot))
+	for _, ac := range snapshot {
+		folders, err := ac.store.ListFolders(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		statuses = append(statuses, types.AccountStatus{
+			Account: ac.email,
+			Syncing: ac.syncing.Load(),
+			Folders: folders,
+		})
+	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Account < statuses[j].Account })
+	writeJSON(w, types.StatusResponse{Accounts: statuses})
+}
+
+// HandleMessages returns the cached message list for a folder — headers only,
+// no bodies. The TUI pages it with the viewport; capped at 200 entries.
+func (st *State) HandleMessages(w http.ResponseWriter, r *http.Request) {
+	ac, ok := st.accountFromRequest(w, r)
+	if !ok {
+		return
+	}
+	folder := r.PathValue("folder")
+	msgs, err := ac.store.ListMessages(r.Context(), folder, 200)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, types.MessagesResponse{Folder: folder, Messages: msgs, Total: len(msgs)})
+}
+
+// HandleMessage returns one cached message. When the body hasn't been
+// downloaded yet, a background job is queued and the worker publishes
+// KindBodyReady on completion — the TUI re-requests on that event.
+func (st *State) HandleMessage(w http.ResponseWriter, r *http.Request) {
+	ac, ok := st.accountFromRequest(w, r)
+	if !ok {
+		return
+	}
+	folder := r.PathValue("folder")
+	uid, err := strconv.ParseUint(r.PathValue("uid"), 10, 32)
+	if err != nil {
+		http.Error(w, "invalid uid", http.StatusBadRequest)
+		return
+	}
+	msg, err := ac.store.GetMessage(r.Context(), folder, uint32(uid))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if msg == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Body not yet cached — enqueue a background fetch and return immediately.
+	if msg.BodyText == "" && ac.provider != nil {
+		st.enqueueBodyFetch(ac.email, folder, uint32(uid))
+	}
+
+	writeJSON(w, types.MessageResponse{Message: *msg})
+}
+
+// HandleMarkRead flags a single message as seen on the server and in the
+// local cache. Invoked by the TUI after the user has kept the message open
+// for the configured delay.
+func (st *State) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
+	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		return ac.provider.MarkRead(ctx, folder, uid)
+	})
+}
+
+// HandleTrash moves a message to the account's Trash mailbox.
+func (st *State) HandleTrash(w http.ResponseWriter, r *http.Request) {
+	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
+		return ac.provider.Trash(r.Context(), folder, uid)
+	})
+}
+
+// HandlePermanentDelete expunges a message with no recycle step. Expected
+// use: invoked from within the Trash mailbox after a confirmation.
+func (st *State) HandlePermanentDelete(w http.ResponseWriter, r *http.Request) {
+	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
+		return ac.provider.PermanentDelete(r.Context(), folder, uid)
+	})
+}
+
+// HandleRemoveAccount stops the account's syncer and drops it from the
+// running daemon. On-disk cleanup (token, DB, config.json) is the CLI's job —
+// the daemon only owns in-memory state.
+func (st *State) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
+	email := r.PathValue("account")
+	if err := st.RemoveAccount(email); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSSE streams events to the TUI as newline-delimited JSON.
+func (st *State) handleSSE(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch := st.Bus.Subscribe(32)
+	defer st.Bus.Unsubscribe(ch)
+
+	rc := http.NewResponseController(w)
+	enc := json.NewEncoder(w)
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			//nolint:errcheck
+			fmt.Fprint(w, "data: ")
+			//nolint:errcheck
+			enc.Encode(e)
+			//nolint:errcheck
+			fmt.Fprint(w, "\n")
+			//nolint:errcheck
+			rc.Flush()
+		}
+	}
+}
+
+// accountFromRequest resolves the {account} path parameter to an accountState,
+// writing a 404 when unknown.
+func (st *State) accountFromRequest(w http.ResponseWriter, r *http.Request) (*accountState, bool) {
+	email := r.PathValue("account")
+	ac := st.lookupAccount(email)
+	if ac == nil {
+		http.Error(w, "unknown account", http.StatusNotFound)
+		return nil, false
+	}
+	return ac, true
+}
+
+// mutateMessage is the shared plumbing for handlers that run a provider
+// operation on (account, folder, uid). Centralises URL parsing, provider
+// presence check, and the success response.
+func (st *State) mutateMessage(w http.ResponseWriter, r *http.Request, op func(ac *accountState, folder string, uid uint32) error) {
+	ac, ok := st.accountFromRequest(w, r)
+	if !ok {
+		return
+	}
+	if ac.provider == nil {
+		http.Error(w, "no provider", http.StatusServiceUnavailable)
+		return
+	}
+	folder := r.PathValue("folder")
+	uid, err := strconv.ParseUint(r.PathValue("uid"), 10, 32)
+	if err != nil {
+		http.Error(w, "invalid uid", http.StatusBadRequest)
+		return
+	}
+	if err := op(ac, folder, uint32(uid)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck
+	json.NewEncoder(w).Encode(v)
+}
