@@ -134,6 +134,12 @@ func (p *fixtureProvider) PermanentDelete(_ context.Context, folder string, uid 
 	return fn(folder, uid)
 }
 
+func (p *fixtureProvider) SyncFolder(context.Context, string) error { return nil }
+
+func (p *fixtureProvider) ResolveSentFolder(context.Context) (string, error) {
+	return "[Gmail]/Sent Mail", nil
+}
+
 func (p *fixtureProvider) trashes() []readCall {
 	p.mu.Lock()
 	defer p.mu.Unlock()

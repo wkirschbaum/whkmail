@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wkirschbaum/whkmail/internal/events"
@@ -449,6 +450,88 @@ func TestHandleKey_CtrlDQuits(t *testing.T) {
 	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD})
 	if cmd == nil {
 		t.Fatal("ctrl+d must dispatch tea.Quit")
+	}
+}
+
+func TestHandleKey_ReplyAll_InViewMessage(t *testing.T) {
+	m := newTestModel()
+	m.view = viewMessage
+	m.account = "me@example.com"
+	m.message = &types.Message{
+		UID: 1, Folder: "INBOX", Subject: "Hi",
+		From: "alice@example.com", To: "me@example.com, bob@example.com",
+		Date: time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC),
+	}
+	m.height = 30
+	m.width = 80
+
+	mm, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if mm.compose == nil {
+		t.Fatal("expected compose pane to open")
+	}
+	if len(mm.compose.draft.To) != 1 || mm.compose.draft.To[0] != "alice@example.com" {
+		t.Errorf("To wrong: %+v", mm.compose.draft.To)
+	}
+	if len(mm.compose.draft.Cc) != 1 || mm.compose.draft.Cc[0] != "bob@example.com" {
+		t.Errorf("Cc wrong: %+v", mm.compose.draft.Cc)
+	}
+	if cmd != nil {
+		t.Error("opening compose must not dispatch a command")
+	}
+}
+
+func TestHandleKey_ReplySender_DropsOtherRecipients(t *testing.T) {
+	m := newTestModel()
+	m.view = viewMessage
+	m.account = "me@example.com"
+	m.message = &types.Message{
+		UID: 1, Subject: "Hi",
+		From: "alice@example.com", To: "me@example.com, bob@example.com",
+		Date: time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC),
+	}
+	m.height = 30
+	m.width = 80
+
+	mm, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	if mm.compose == nil {
+		t.Fatal("expected compose pane to open")
+	}
+	if len(mm.compose.draft.To) != 1 || mm.compose.draft.To[0] != "alice@example.com" {
+		t.Errorf("To wrong: %+v", mm.compose.draft.To)
+	}
+	if len(mm.compose.draft.Cc) != 0 {
+		t.Errorf("Cc should be empty on reply-sender, got %+v", mm.compose.draft.Cc)
+	}
+}
+
+func TestHandleKey_Reply_IgnoredOutsideDetailView(t *testing.T) {
+	m := newTestModel()
+	m.view = viewMessages
+
+	mm, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if mm.compose != nil {
+		t.Error("reply must not open outside viewMessage")
+	}
+}
+
+func TestComposeKey_EscCancels(t *testing.T) {
+	m := newTestModel()
+	m.view = viewMessage
+	m.account = "me@example.com"
+	m.message = &types.Message{Subject: "Hi", From: "alice@example.com"}
+	m.height = 30
+	m.width = 80
+
+	mm, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if mm.compose == nil {
+		t.Fatal("compose should be open")
+	}
+	mm2, cmd := mm.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if mm2.compose != nil {
+		t.Error("esc should close compose")
+	}
+	if cmd != nil {
+		t.Error("esc must not dispatch a command")
 	}
 }
 

@@ -68,13 +68,23 @@ func (m Model) helpSections() []helpSection {
 		},
 		{
 			title:  "Message (detail)",
-			active: m.view == viewMessage,
+			active: m.view == viewMessage && m.compose == nil,
 			entries: []helpEntry{
 				{k(ActScrollBody), "scroll body"},
 				{k(ActHalfPage), "half page up/down"},
 				{k(ActJumpMessage), "next / prev message"},
 				{k(ActMarkUnread), "mark unread (back to list)"},
 				{k(ActTrash), "trash"},
+				{"r", "reply all"},
+				{"R", "reply to sender"},
+			},
+		},
+		{
+			title:  "Compose",
+			active: m.compose != nil,
+			entries: []helpEntry{
+				{"C-s / Alt-Enter", "send"},
+				{k(ActBack), "cancel"},
 			},
 		},
 	}

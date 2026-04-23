@@ -139,10 +139,24 @@ func threadMessages(msgs []types.Message) ([]types.Message, []int) {
 	return out, depths
 }
 
-// visibleBodyRows returns the number of body lines that fit on screen in the
-// message detail view. Chrome = up to 7 header lines + 1 blank separator +
-// status bar.
+// visibleBodyRows returns the number of body lines that fit on screen in
+// the message detail view. Chrome = up to 7 header lines + 1 blank
+// separator + status bar. When a compose pane is open the body is
+// constrained to roughly a third of the screen so the reply editor gets
+// the rest — the user still needs enough of the original visible to
+// reference while typing.
 func (m Model) visibleBodyRows() int {
+	if m.compose != nil {
+		if m.height <= 0 {
+			return 6
+		}
+		// Leave two-thirds for the compose pane.
+		n := m.height / 3
+		if n < 3 {
+			n = 3
+		}
+		return n
+	}
 	const chrome = 8
 	n := m.height - chrome
 	if n < 1 {

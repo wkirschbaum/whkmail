@@ -4,13 +4,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// handleKey dispatches one keystroke. Modal popups short-circuit the
-// normal flow; otherwise we table-lookup the key and invoke its handler.
-// Context-sensitivity lives inside each handler (e.g. doMarkUnread is a
-// no-op outside the message views).
+// handleKey dispatches one keystroke. Modal popups and the compose pane
+// short-circuit the normal flow; otherwise we table-lookup the key and
+// invoke its handler. Context-sensitivity lives inside each handler
+// (e.g. doMarkUnread is a no-op outside the message views).
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.modal != nil {
 		return m.modal.handleKey(m, msg)
+	}
+	if m.compose != nil {
+		return m.handleComposeKey(msg)
 	}
 	h, ok := keyHandlers[msg.String()]
 	if !ok {
@@ -23,11 +26,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 // user presses it. Multiple keys can target the same action (e.g. `j`
 // and `down` both doDown). A future per-user-rebinding feature can mutate
 // this table at startup from the config file.
+//
+// `r` is reply-all (the default action), `R` is reply-sender. This
+// inverts the traditional mutt convention (r=sender, R=all) because the
+// user's preference was for reply-all to be the primary action. There's
+// no refresh keybinding — the status bar spinner + automatic re-fetch on
+// KindSyncDone obsolete it.
 var keyHandlers = map[string]func(Model) (Model, tea.Cmd){
 	"ctrl+c":    doQuit,
 	"ctrl+d":    doQuit,
-	"r":         doRefresh,
-	"R":         doRefresh,
 	"j":         doDown,
 	"down":      doDown,
 	" ":         doDown,
@@ -47,6 +54,8 @@ var keyHandlers = map[string]func(Model) (Model, tea.Cmd){
 	"N":         doMarkUnread,
 	"s":         doMarkRead,
 	"!":         doMarkRead,
+	"r":         doReplyAll,
+	"R":         doReplySender,
 	",":         doOpenStylePicker,
 	"?":         doOpenHelp,
 	"esc":       doBack,
@@ -55,24 +64,46 @@ var keyHandlers = map[string]func(Model) (Model, tea.Cmd){
 
 func doQuit(m Model) (Model, tea.Cmd) { return m, tea.Quit }
 
-func doRefresh(m Model) (Model, tea.Cmd) {
-	switch m.view {
-	case viewAccounts, viewFolders:
-		m.loading = true
-		return m, fetchStatus(m.client)
-	case viewMessages:
-		m.loading = true
-		return m, fetchMessages(m.client, m.account, m.folder)
-	case viewMessage:
-		if m.message != nil {
-			m.loading = true
-			// Retry clears any previous body-fetch failure so the
-			// placeholder goes back to "Loading…" while we try again.
-			delete(m.bodyErr, prefetchKey{account: m.account, folder: m.folder, uid: m.message.UID})
-			return m, fetchMessage(m.client, m.account, m.folder, m.message.UID)
-		}
+// doReplyAll opens a compose pane pre-populated with reply-to-all
+// recipients. The original body is quoted; the textarea cursor starts
+// above the quote so the user can type their reply directly.
+func doReplyAll(m Model) (Model, tea.Cmd) {
+	return m.openReply(true)
+}
+
+// doReplySender is the narrower reply — only the original sender goes on
+// the To line.
+func doReplySender(m Model) (Model, tea.Cmd) {
+	return m.openReply(false)
+}
+
+// openReply is the shared entry point for the two reply modes. Rejects
+// anything that isn't a viewable message (no open mail, wrong view) so
+// the user gets silence on a stray keypress instead of a half-populated
+// compose. The source folder is captured here so the daemon can re-sync
+// it after the reply is sent (picks up the \Answered flag).
+func (m Model) openReply(all bool) (Model, tea.Cmd) {
+	if m.view != viewMessage || m.message == nil {
+		return m, nil
 	}
+	cs := newComposeState(*m.message, m.account, all, m.folder)
+	cs.resize(m.width-4, composePaneRows(m.height))
+	m.compose = &cs
 	return m, nil
+}
+
+// composePaneRows returns how many rows the textarea gets. We reserve
+// about a third of the screen for the open message and give the rest to
+// the compose pane. Floors at 4 so the textarea is always usable.
+func composePaneRows(height int) int {
+	if height <= 0 {
+		return 10
+	}
+	rows := height * 2 / 3
+	if rows < 4 {
+		return 4
+	}
+	return rows
 }
 
 func doDown(m Model) (Model, tea.Cmd) {

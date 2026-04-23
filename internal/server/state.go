@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/wkirschbaum/whkmail/internal/events"
+	"github.com/wkirschbaum/whkmail/internal/smtp"
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
@@ -35,6 +36,25 @@ type MailProvider interface {
 	// is STORE +FLAGS.SILENT (\Deleted) followed by UID EXPUNGE. Expected
 	// use: invoked from inside the Trash folder after confirmation.
 	PermanentDelete(ctx context.Context, folder string, uid uint32) error
+
+	// SyncFolder triggers a one-shot re-sync of folder so recently
+	// changed flags or freshly-arrived messages propagate to the local
+	// cache without waiting for the IDLE-driven background pass.
+	SyncFolder(ctx context.Context, folder string) error
+
+	// ResolveSentFolder returns the name of the account's Sent mailbox,
+	// used by the send handler to refresh exactly the right folder
+	// after a successful submission.
+	ResolveSentFolder(ctx context.Context) (string, error)
+}
+
+// MailSender is the outbound half — kept as a separate interface from
+// MailProvider because an account might conceivably read from one
+// backend (IMAP) and send via another (API, relay). Today the daemon
+// wires a concrete smtp.Sender, but the server package only depends on
+// this narrow contract.
+type MailSender interface {
+	Send(ctx context.Context, msg smtp.Message) error
 }
 
 // job is a unit of work for the body-fetch worker.
@@ -49,6 +69,7 @@ type accountState struct {
 	email    string
 	store    MailStore
 	provider MailProvider
+	sender   MailSender // may be nil when an account is read-only
 	syncing  atomic.Bool
 	// cancel stops the per-account syncer goroutine when the account is
 	// removed at runtime. nil in tests and for accounts whose owner doesn't
@@ -64,13 +85,20 @@ type State struct {
 	jobs     chan job
 }
 
-// AccountOption customises an account registration. See WithCancel.
+// AccountOption customises an account registration. See WithCancel and
+// WithSender.
 type AccountOption func(*accountState)
 
 // WithCancel attaches a cancel function to the account — RemoveAccount will
 // invoke it to stop the account's syncer goroutine before deregistration.
 func WithCancel(cancel context.CancelFunc) AccountOption {
 	return func(s *accountState) { s.cancel = cancel }
+}
+
+// WithSender attaches an outbound MailSender to the account. Optional —
+// accounts without a sender return 503 from POST /send.
+func WithSender(sender MailSender) AccountOption {
+	return func(s *accountState) { s.sender = sender }
 }
 
 // NewState creates a new server State backed by the given event bus.

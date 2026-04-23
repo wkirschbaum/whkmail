@@ -70,6 +70,7 @@ func (s *SQLite) migrate() error {
 	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN body_fetched INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN in_reply_to TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN answered INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -86,13 +87,13 @@ func (s *SQLite) UpsertMessage(ctx context.Context, m types.Message) (bool, erro
 const (
 	sqlInsertIgnoreMessage = `
 		INSERT OR IGNORE INTO messages
-		  (uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, body_text, message_id, in_reply_to)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		  (uid, folder, subject, from_addr, to_addr, date, unread, flagged, answered, draft, body_text, message_id, in_reply_to)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	sqlUpdateMessageHeaders = `
 		UPDATE messages SET
 		  subject=?, from_addr=?, to_addr=?, date=?,
-		  unread=?, flagged=?, draft=?
+		  unread=?, flagged=?, answered=?, draft=?
 		WHERE folder=? AND uid=?`
 )
 
@@ -129,7 +130,7 @@ func (s *SQLite) UpsertMessages(ctx context.Context, msgs []types.Message) ([]bo
 	for i, m := range msgs {
 		res, err := insertStmt.ExecContext(ctx,
 			m.UID, m.Folder, m.Subject, m.From, m.To, m.Date.Unix(),
-			boolInt(m.Unread), boolInt(m.Flagged), boolInt(m.Draft), m.BodyText,
+			boolInt(m.Unread), boolInt(m.Flagged), boolInt(m.Answered), boolInt(m.Draft), m.BodyText,
 			m.MessageID, m.InReplyTo,
 		)
 		if err != nil {
@@ -146,7 +147,7 @@ func (s *SQLite) UpsertMessages(ctx context.Context, msgs []types.Message) ([]bo
 		// Row existed — refresh the headers + flags (but not body_text).
 		if _, err := updateStmt.ExecContext(ctx,
 			m.Subject, m.From, m.To, m.Date.Unix(),
-			boolInt(m.Unread), boolInt(m.Flagged), boolInt(m.Draft),
+			boolInt(m.Unread), boolInt(m.Flagged), boolInt(m.Answered), boolInt(m.Draft),
 			m.Folder, m.UID,
 		); err != nil {
 			return nil, fmt.Errorf("update uid %d: %w", m.UID, err)
@@ -161,7 +162,7 @@ func (s *SQLite) UpsertMessages(ctx context.Context, msgs []types.Message) ([]bo
 
 func (s *SQLite) ListMessages(ctx context.Context, folder string, limit int) ([]types.Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, message_id, in_reply_to
+		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, answered, draft, message_id, in_reply_to
 		FROM messages WHERE folder = ? ORDER BY date DESC LIMIT ?
 	`, folder, limit)
 	if err != nil {
@@ -173,13 +174,14 @@ func (s *SQLite) ListMessages(ctx context.Context, folder string, limit int) ([]
 	for rows.Next() {
 		var m types.Message
 		var ts int64
-		var unread, flagged, draft int
-		if err := rows.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &draft, &m.MessageID, &m.InReplyTo); err != nil {
+		var unread, flagged, answered, draft int
+		if err := rows.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &answered, &draft, &m.MessageID, &m.InReplyTo); err != nil {
 			return nil, err
 		}
 		m.Date = time.Unix(ts, 0)
 		m.Unread = unread == 1
 		m.Flagged = flagged == 1
+		m.Answered = answered == 1
 		m.Draft = draft == 1
 		out = append(out, m)
 	}
@@ -188,13 +190,13 @@ func (s *SQLite) ListMessages(ctx context.Context, folder string, limit int) ([]
 
 func (s *SQLite) GetMessage(ctx context.Context, folder string, uid uint32) (*types.Message, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, body_text, body_fetched, message_id, in_reply_to
+		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, answered, draft, body_text, body_fetched, message_id, in_reply_to
 		FROM messages WHERE folder = ? AND uid = ?
 	`, folder, uid)
 	var m types.Message
 	var ts int64
-	var unread, flagged, draft, bodyFetched int
-	err := row.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &draft, &m.BodyText, &bodyFetched, &m.MessageID, &m.InReplyTo)
+	var unread, flagged, answered, draft, bodyFetched int
+	err := row.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &answered, &draft, &m.BodyText, &bodyFetched, &m.MessageID, &m.InReplyTo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -204,6 +206,7 @@ func (s *SQLite) GetMessage(ctx context.Context, folder string, uid uint32) (*ty
 	m.Date = time.Unix(ts, 0)
 	m.Unread = unread == 1
 	m.Flagged = flagged == 1
+	m.Answered = answered == 1
 	m.Draft = draft == 1
 	m.BodyFetched = bodyFetched == 1
 	return &m, nil

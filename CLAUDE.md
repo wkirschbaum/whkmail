@@ -63,5 +63,6 @@ See [docs/architecture.md](docs/architecture.md) and [docs/decisions.md](docs/de
 - **NEVER** use `mattn/go-sqlite3` (requires CGo, breaks cross-compilation) — use `modernc.org/sqlite`.
 - **NEVER** use CGo in any package — the whole point is a CGo-free single static binary.
 - The TUI is stateless. All mail state lives in the daemon's SQLite DB.
-- The daemon owns the OAuth2 token and IMAP connection. The TUI never talks to Gmail directly.
+- The daemon owns the OAuth2 token and IMAP/SMTP connections. The TUI never talks to Gmail directly.
 - New TUI keybindings must map to a standard vim convention **and** a standard emacs convention — pick from established mutt/vim or gnus/mu4e/emacs bindings, not ad-hoc letters. Every action should be reachable from either muscle memory.
+- **Reply-all is the default action** (`r`), sender-only is the narrower variant (`R`). This reverses the traditional mutt convention (`r`=sender, `g`=group) by explicit user preference — most replies go to the whole thread.

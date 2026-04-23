@@ -74,6 +74,10 @@ func (p *stubProvider) MarkRead(ctx context.Context, folder string, uid uint32) 
 func (p *stubProvider) MarkUnread(context.Context, string, uint32) error      { return nil }
 func (p *stubProvider) Trash(context.Context, string, uint32) error           { return nil }
 func (p *stubProvider) PermanentDelete(context.Context, string, uint32) error { return nil }
+func (p *stubProvider) SyncFolder(context.Context, string) error              { return nil }
+func (p *stubProvider) ResolveSentFolder(context.Context) (string, error) {
+	return "[Gmail]/Sent Mail", nil
+}
 
 func postRead(account, folder, uid string) *http.Request {
 	r := httptest.NewRequestWithContext(

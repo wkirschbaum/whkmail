@@ -13,7 +13,17 @@ import (
 // banner — except prefetchMessage which deliberately swallows its error so a
 // flaky background fetch doesn't trash the foreground UI.
 
-const requestTimeout = 30 * time.Second
+const (
+	requestTimeout = 30 * time.Second
+	sendTimeout    = 90 * time.Second
+)
+
+// contextWithSendTimeout builds the per-send context. Longer than
+// requestTimeout because a submission can include a lot of body bytes
+// and Gmail's SMTP submission is slower than its IMAP responses.
+func contextWithSendTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), sendTimeout)
+}
 
 func fetchStatus(c *Client) tea.Cmd {
 	return func() tea.Msg {

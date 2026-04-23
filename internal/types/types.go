@@ -22,6 +22,7 @@ type Message struct {
 	Date        time.Time `json:"date"`
 	Unread      bool      `json:"unread"`
 	Flagged     bool      `json:"flagged"`
+	Answered    bool      `json:"answered,omitempty"`
 	Draft       bool      `json:"draft,omitempty"`
 	BodyText    string    `json:"body_text,omitempty"`
 	BodyFetched bool      `json:"body_fetched,omitempty"`
@@ -94,4 +95,21 @@ type MessagesResponse struct {
 
 type MessageResponse struct {
 	Message Message `json:"message"`
+}
+
+// SendRequest is the wire payload for POST /accounts/{account}/send.
+// Mirrors smtp.Message (minus derived fields like Date and MessageID)
+// so the TUI can construct it without importing internal/smtp.
+type SendRequest struct {
+	To         []string `json:"to,omitempty"`
+	Cc         []string `json:"cc,omitempty"`
+	Subject    string   `json:"subject"`
+	Body       string   `json:"body"`
+	InReplyTo  string   `json:"in_reply_to,omitempty"`
+	References []string `json:"references,omitempty"`
+	// SourceFolder is the folder the replied-to message lives in. The
+	// daemon re-syncs this folder after a successful submission so the
+	// \Answered flag set by the server appears in the TUI right away
+	// instead of waiting for the next IDLE-driven refresh.
+	SourceFolder string `json:"source_folder,omitempty"`
 }

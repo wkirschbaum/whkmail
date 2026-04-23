@@ -2,9 +2,11 @@ package tui
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -78,6 +80,33 @@ func (c *Client) Trash(ctx context.Context, account, folder string, uid uint32) 
 // PermanentDelete permanently expunges a message (use from the Trash folder).
 func (c *Client) PermanentDelete(ctx context.Context, account, folder string, uid uint32) error {
 	return c.post(ctx, account, folder, uid, "delete")
+}
+
+// Send hands a composed message to the daemon for SMTP submission.
+// The daemon's 60-second fetch/send timeout applies; the returned error
+// carries the HTTP body on non-2xx so the TUI can surface specific
+// failures (e.g. "no sender configured" on 503).
+func (c *Client) Send(ctx context.Context, account string, req types.SendRequest) error {
+	path := "/accounts/" + url.PathEscape(account) + "/send"
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("send: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 
 // RemoveAccount deregisters an account from the running daemon. Cleanup of

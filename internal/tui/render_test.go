@@ -172,6 +172,36 @@ func TestRenderStylePickerBody_HighlightsCursor(t *testing.T) {
 	}
 }
 
+func TestFormatMessageRow_AnsweredIcon(t *testing.T) {
+	msg := types.Message{
+		From:     "Alice <alice@ex>",
+		Subject:  "Hi",
+		Answered: true,
+		Date:     time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC),
+	}
+	row := formatMessageRow(msg, 80)
+	if !strings.Contains(row, "↩") {
+		t.Errorf("answered message should show ↩: %q", row)
+	}
+}
+
+func TestFormatMessageRow_UnreadDotWinsOverAnswered(t *testing.T) {
+	msg := types.Message{
+		From:     "Alice <alice@ex>",
+		Subject:  "Hi",
+		Unread:   true,
+		Answered: true,
+		Date:     time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC),
+	}
+	row := formatMessageRow(msg, 80)
+	if !strings.Contains(row, "●") {
+		t.Errorf("unread dot should win priority: %q", row)
+	}
+	if strings.Contains(row, "↩") {
+		t.Errorf("↩ should not appear when unread dot is shown: %q", row)
+	}
+}
+
 func TestFormatMessageRow_Shape(t *testing.T) {
 	msg := types.Message{
 		From:    "Alice <alice@example.com>",

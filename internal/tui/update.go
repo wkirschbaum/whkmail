@@ -5,7 +5,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/wkirschbaum/whkmail/internal/events"
+	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
 // Update is bubbletea's event dispatch. One case per message type;
@@ -16,6 +18,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
+		if m.compose != nil {
+			m.compose.resize(m.width-4, composePaneRows(m.height))
+		}
 
 	case msgStatus:
 		m.err = nil
@@ -108,6 +113,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message.Unread = true
 		}
 
+	case msgSent:
+		// Close the compose pane on success; the flash bar covers the
+		// acknowledgement. Silent success is intentional — the user
+		// knows they pressed Ctrl+S. The on-disk draft is no longer
+		// useful so it's removed here; a failed delete is logged but
+		// not surfaced (the user can't do anything about it).
+		m.compose = nil
+		if msg.draftKey != "" {
+			if err := deleteDraft(msg.account, msg.draftKey); err != nil {
+				return m, nil
+			}
+		}
+
+	case msgDraftSave:
+		// Honour only the latest scheduled tick — earlier ticks mid-burst
+		// carry stale generation counts and must no-op. Saving is best-
+		// effort; we log and keep going on failure rather than interrupt
+		// the user's typing with a modal error.
+		if m.compose == nil || msg.gen != m.compose.draftGen {
+			return m, nil
+		}
+		body := m.compose.body.Value()
+		req := types.SendRequest{
+			To:           m.compose.draft.To,
+			Cc:           m.compose.draft.Cc,
+			Subject:      m.compose.draft.Subject,
+			Body:         body,
+			InReplyTo:    m.compose.draft.InReplyTo,
+			References:   m.compose.draft.References,
+			SourceFolder: m.compose.sourceFolder,
+		}
+		if err := saveDraft(m.account, m.compose.draftKey, req); err != nil {
+			// Best-effort: surface via the error banner so the user knows
+			// the draft isn't safe on disk, but don't block typing.
+			m.err = fmt.Errorf("save draft: %w", err)
+		}
+
 	case msgTrashed, msgDeleted:
 		// Server confirmed the mutation — nothing more to do, the
 		// optimistic local update already happened at key-press time. A
@@ -146,6 +188,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case msgErr:
 		m.err = msg.err
 		m.loading = false
+		// If the failure came from a send, unlock the compose pane so
+		// the user can retry or adjust.
+		if m.compose != nil {
+			m.compose.sending = false
+		}
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)

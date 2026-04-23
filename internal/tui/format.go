@@ -34,9 +34,16 @@ func threadIndent(depths []int, i int) string {
 
 func formatMessageRow(msg types.Message, width int) string {
 	date := msg.Date.Format("Jan 02")
+	// Priority: unread dot wins over the answered arrow — users care
+	// most about what they haven't read yet. An already-read reply
+	// still shows the ↩ so they can tell at a glance which threads
+	// they've already weighed in on.
 	flag := " "
-	if msg.Unread {
+	switch {
+	case msg.Unread:
 		flag = "●"
+	case msg.Answered:
+		flag = "↩"
 	}
 	fromWidth := 24
 	dateWidth := 6

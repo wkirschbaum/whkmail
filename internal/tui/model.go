@@ -146,6 +146,10 @@ type Model struct {
 
 	// daemon sync status (status bar spinner)
 	sync syncState
+
+	// compose is non-nil while the user is writing a reply. The pane
+	// renders below the open message and intercepts all key input.
+	compose *composeState
 }
 
 // Message types delivered to Update. Each corresponds to one tea.Cmd or one

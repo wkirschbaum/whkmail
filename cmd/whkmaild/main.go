@@ -12,7 +12,14 @@ import (
 	"github.com/wkirschbaum/whkmail/internal/imap"
 	"github.com/wkirschbaum/whkmail/internal/notify"
 	"github.com/wkirschbaum/whkmail/internal/server"
+	"github.com/wkirschbaum/whkmail/internal/smtp"
 	"github.com/wkirschbaum/whkmail/internal/storage"
+)
+
+// Gmail SMTP submission endpoint. Uses STARTTLS on port 587.
+const (
+	gmailSMTPHost = "smtp.gmail.com"
+	gmailSMTPPort = 587
 )
 
 // resolveDBPath returns the database path to use for an account.
@@ -86,8 +93,12 @@ func main() {
 		}()
 
 		syncer := imap.New(acc.config.IMAPHost, acc.config.IMAPPort, acc.config.Email, acc.tokenFn, db, bus)
+		sender := smtp.New(gmailSMTPHost, gmailSMTPPort, acc.config.Email, acc.tokenFn)
 		accCtx, accCancel := context.WithCancel(ctx)
-		st.AddAccount(acc.config.Email, db, syncer, server.WithCancel(accCancel))
+		st.AddAccount(acc.config.Email, db, syncer,
+			server.WithCancel(accCancel),
+			server.WithSender(sender),
+		)
 		go syncer.Run(accCtx)
 	}
 

@@ -161,6 +161,15 @@ func (s *Syncer) syncMailbox(ctx context.Context, c *imapclient.Client, name str
 	for _, buf := range msgs {
 		batch = append(batch, messageFromBuffer(name, buf))
 	}
+	// Mail in the Sent folder is, by definition, read — the user wrote
+	// it. Force Unread=false regardless of the server flag so a sent
+	// message never shows up as "unread" in the TUI, even on servers
+	// (or moments) where \Seen isn't set on the submitted copy.
+	if s.isSentFolder(ctx, name) {
+		for i := range batch {
+			batch[i].Unread = false
+		}
+	}
 	inserted, err := s.store.UpsertMessages(ctx, batch)
 	if err != nil {
 		return fmt.Errorf("upsert batch: %w", err)
@@ -256,11 +265,12 @@ func (s *Syncer) poll(ctx context.Context, c *imapclient.Client) error {
 // messageFromBuffer converts the library's fetch result into our domain type.
 func messageFromBuffer(folder string, buf *imapclient.FetchMessageBuffer) types.Message {
 	m := types.Message{
-		UID:     uint32(buf.UID),
-		Folder:  folder,
-		Unread:  !containsFlag(buf.Flags, goimap.FlagSeen),
-		Flagged: containsFlag(buf.Flags, goimap.FlagFlagged),
-		Draft:   containsFlag(buf.Flags, goimap.FlagDraft),
+		UID:      uint32(buf.UID),
+		Folder:   folder,
+		Unread:   !containsFlag(buf.Flags, goimap.FlagSeen),
+		Flagged:  containsFlag(buf.Flags, goimap.FlagFlagged),
+		Answered: containsFlag(buf.Flags, goimap.FlagAnswered),
+		Draft:    containsFlag(buf.Flags, goimap.FlagDraft),
 	}
 	if buf.Envelope != nil {
 		m.Subject = buf.Envelope.Subject

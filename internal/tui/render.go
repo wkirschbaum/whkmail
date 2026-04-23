@@ -204,11 +204,15 @@ func (m Model) renderMessage() string {
 	case m.bodyErr[prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}] != "":
 		reason := m.bodyErr[prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}]
 		b.WriteString(styleMuted.Render("Failed to load body: " + reason))
-		b.WriteString("\n" + styleDim.Render("Press r to retry."))
 	case msg.BodyFetched:
 		b.WriteString(styleDim.Render("(no text content)"))
 	default:
 		b.WriteString(styleMuted.Render("Loading…"))
+	}
+
+	if m.compose != nil {
+		b.WriteString("\n\n")
+		b.WriteString(m.renderCompose())
 	}
 	return b.String()
 }

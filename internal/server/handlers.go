@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
 
+	"github.com/wkirschbaum/whkmail/internal/smtp"
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
@@ -22,6 +24,7 @@ func BuildMux(st *State) *http.ServeMux {
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/unread", st.HandleMarkUnread)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/trash", st.HandleTrash)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/delete", st.HandlePermanentDelete)
+	mux.HandleFunc("POST /accounts/{account}/send", st.HandleSend)
 	mux.HandleFunc("DELETE /accounts/{account}", st.HandleRemoveAccount)
 	mux.HandleFunc("GET /events", st.handleSSE)
 	return mux
@@ -133,6 +136,77 @@ func (st *State) HandlePermanentDelete(w http.ResponseWriter, r *http.Request) {
 	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
 		return ac.provider.PermanentDelete(r.Context(), folder, uid)
 	})
+}
+
+// HandleSend delivers a composed message through the account's sender.
+// Returns 503 when no sender is configured (e.g. read-only account) so
+// the TUI can show a specific error instead of a generic 500.
+//
+// On success the handler fires a background re-sync of the Sent folder
+// (so the new message appears in [Gmail]/Sent Mail right away) and, if
+// the TUI passed one, the folder containing the replied-to message (so
+// the \Answered flag Gmail sets on the parent propagates without
+// waiting for IDLE).
+func (st *State) HandleSend(w http.ResponseWriter, r *http.Request) {
+	ac, ok := st.accountFromRequest(w, r)
+	if !ok {
+		return
+	}
+	if ac.sender == nil {
+		http.Error(w, "no sender configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req types.SendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), BodyFetchTimeout)
+	defer cancel()
+	msg := smtp.Message{
+		From:       ac.email,
+		To:         req.To,
+		Cc:         req.Cc,
+		Subject:    req.Subject,
+		Body:       req.Body,
+		InReplyTo:  req.InReplyTo,
+		References: req.References,
+	}
+	if err := ac.sender.Send(ctx, msg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Re-sync affected folders in the background — never block the
+	// HTTP response on it. The TUI auto-refreshes on the KindSyncDone
+	// event SyncFolder emits, so the user sees the sent message and
+	// the \Answered flag without pressing a refresh key.
+	go st.resyncAfterSend(ac, req.SourceFolder)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// resyncAfterSend walks the folders that a successful send could have
+// affected and triggers a one-off sync of each. Errors are logged but
+// never fatal — the TUI has already accepted the send.
+func (st *State) resyncAfterSend(ac *accountState, sourceFolder string) {
+	if ac.provider == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), BodyFetchTimeout)
+	defer cancel()
+
+	if sourceFolder != "" {
+		if err := ac.provider.SyncFolder(ctx, sourceFolder); err != nil {
+			slog.Warn("post-send source sync", "account", ac.email, "folder", sourceFolder, "err", err)
+		}
+	}
+	sent, err := ac.provider.ResolveSentFolder(ctx)
+	if err != nil {
+		slog.Warn("post-send: resolve sent folder", "account", ac.email, "err", err)
+		return
+	}
+	if err := ac.provider.SyncFolder(ctx, sent); err != nil {
+		slog.Warn("post-send sent sync", "account", ac.email, "folder", sent, "err", err)
+	}
 }
 
 // HandleRemoveAccount stops the account's syncer and drops it from the

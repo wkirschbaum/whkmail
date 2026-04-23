@@ -55,6 +55,7 @@ type Syncer struct {
 	opFailures int
 
 	trashCache trashFolderCache
+	sentCache  sentFolderCache
 }
 
 // New constructs a Syncer. The token closure is expected to yield a fresh
