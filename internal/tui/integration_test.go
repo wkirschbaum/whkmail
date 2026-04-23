@@ -55,6 +55,8 @@ func (s *fixtureStore) GetMessage(_ context.Context, folder string, uid uint32) 
 	return nil, nil
 }
 
+func (s *fixtureStore) DeleteMessage(_ context.Context, _ string, _ uint32) error { return nil }
+
 func (s *fixtureStore) setBody(b string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -69,9 +71,16 @@ type fixtureProvider struct {
 	trashFn     func(folder string, uid uint32) error
 	deleteFn    func(folder string, uid uint32) error
 
-	markReadCalls []readCall
-	trashCalls    []readCall
-	deleteCalls   []readCall
+	markReadCalls  []readCall
+	trashCalls     []readCall
+	deleteCalls    []readCall
+	trashBatchCh   chan struct{} // closed on first TrashBatch call; nil means not watched
+	trashBatchCall *trashBatchArgs
+}
+
+type trashBatchArgs struct {
+	folder string
+	uids   []uint32
 }
 
 type readCall struct {
@@ -132,6 +141,17 @@ func (p *fixtureProvider) PermanentDelete(_ context.Context, folder string, uid 
 		return nil
 	}
 	return fn(folder, uid)
+}
+
+func (p *fixtureProvider) TrashBatch(_ context.Context, folder string, uids []uint32) error {
+	p.mu.Lock()
+	p.trashBatchCall = &trashBatchArgs{folder: folder, uids: append([]uint32(nil), uids...)}
+	ch := p.trashBatchCh
+	p.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+	return nil
 }
 
 func (p *fixtureProvider) SyncFolder(context.Context, string) error { return nil }
@@ -341,18 +361,30 @@ func TestIntegration_MarkRead_Error(t *testing.T) {
 }
 
 func TestIntegration_Trash(t *testing.T) {
-	prov := &fixtureProvider{}
-	client, _, done := newTestBackend(t, &fixtureStore{}, prov)
+	batched := make(chan struct{})
+	prov := &fixtureProvider{trashBatchCh: batched}
+	client, st, done := newTestBackend(t, &fixtureStore{}, prov)
 	defer done()
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+	go st.TrashWorker(workerCtx)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.Trash(ctx, itAccount, "INBOX", 17); err != nil {
 		t.Fatalf("Trash: %v", err)
 	}
-	calls := prov.trashes()
-	if len(calls) != 1 || calls[0].folder != "INBOX" || calls[0].uid != 17 {
-		t.Errorf("unexpected Trash calls: %+v", calls)
+	select {
+	case <-batched:
+	case <-time.After(time.Second):
+		t.Fatal("TrashWorker did not pick up the trash job")
+	}
+	prov.mu.Lock()
+	got := prov.trashBatchCall
+	prov.mu.Unlock()
+	if got == nil || got.folder != "INBOX" || len(got.uids) != 1 || got.uids[0] != 17 {
+		t.Errorf("unexpected TrashBatch call: %+v", got)
 	}
 }
 

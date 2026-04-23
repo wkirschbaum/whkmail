@@ -58,36 +58,44 @@ func discoverTrashFolder(c *imapclient.Client) (string, error) {
 	return "", fmt.Errorf("could not locate Trash mailbox — neither SPECIAL-USE \\Trash nor a known fallback name was found")
 }
 
-// Trash moves a message from folder into the account's Trash mailbox. Uses
-// IMAP UID MOVE when the server supports it (Gmail does); the client library
-// silently falls back to COPY + \Deleted + EXPUNGE when MOVE is not
-// advertised. Local cache is updated to remove the source row immediately so
-// the TUI reflects the move without waiting for the next sync pass.
-func (s *Syncer) Trash(ctx context.Context, folder string, uid uint32) error {
-	err := s.withOpsConn(ctx, func(c *imapclient.Client) error {
+// TrashBatch moves one or more messages from folder into the account's Trash
+// mailbox in a single IMAP UID MOVE command. This is the hot path for bulk
+// deletes: N messages in the same folder cost one SELECT + one MOVE instead
+// of N round-trips. The caller is responsible for removing the messages from
+// the local cache before or after calling this method.
+func (s *Syncer) TrashBatch(ctx context.Context, folder string, uids []uint32) error {
+	if len(uids) == 0 {
+		return nil
+	}
+	return s.withOpsConn(ctx, func(c *imapclient.Client) error {
 		trash, err := s.resolveTrashFolder(c)
 		if err != nil {
 			return err
 		}
 		if trash == folder {
-			// Trash-from-inside-Trash is a permanent delete, not a move. The
-			// caller should have dispatched to PermanentDelete; refuse here to
-			// avoid a silent no-op server round trip.
-			return fmt.Errorf("message already in Trash; use PermanentDelete instead")
+			return fmt.Errorf("messages already in Trash; use PermanentDelete instead")
 		}
 		if _, err := c.Select(folder, nil).Wait(); err != nil {
 			return fmt.Errorf("select %s: %w", folder, err)
 		}
-		if _, err := c.Move(goimap.UIDSetNum(goimap.UID(uid)), trash).Wait(); err != nil {
+		uidList := make([]goimap.UID, len(uids))
+		for i, uid := range uids {
+			uidList[i] = goimap.UID(uid)
+		}
+		if _, err := c.Move(goimap.UIDSetNum(uidList...), trash).Wait(); err != nil {
 			return fmt.Errorf("move to %s: %w", trash, err)
 		}
 		return nil
 	})
-	if err != nil {
+}
+
+// Trash moves a single message from folder into the account's Trash mailbox.
+// Local cache is updated to remove the source row immediately so the TUI
+// reflects the move without waiting for the next sync pass.
+func (s *Syncer) Trash(ctx context.Context, folder string, uid uint32) error {
+	if err := s.TrashBatch(ctx, folder, []uint32{uid}); err != nil {
 		return err
 	}
-	// Local: drop from source. The Trash folder will pick up the moved
-	// message on the next sync pass (with its new UID assigned by the server).
 	if err := s.store.DeleteMessage(ctx, folder, uid); err != nil {
 		return fmt.Errorf("delete from cache: %w", err)
 	}

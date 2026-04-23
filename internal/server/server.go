@@ -16,6 +16,12 @@ import (
 	"github.com/wkirschbaum/whkmail/internal/events"
 )
 
+// trashBatchSize caps how many UIDs go into a single IMAP UID MOVE command.
+// Gmail has no documented limit but very long UID sets can hit server-side
+// command-length guards; 100 is conservative and still gives >100× speedup
+// over per-message moves.
+const trashBatchSize = 100
+
 // Timeouts for daemon-side work. Kept generous so Gmail's slower edge
 // cases (big HTML bodies, high-latency mobile links) don't time out
 // mid-operation, but bounded so a wedged IMAP session can't stall a
@@ -40,6 +46,7 @@ const (
 func Serve(ctx context.Context, st *State) error {
 	go st.trackSyncState(ctx)
 	go st.Worker(ctx)
+	go st.TrashWorker(ctx)
 
 	mux := BuildMux(st)
 
@@ -152,5 +159,86 @@ func (st *State) enqueueBodyFetch(account, folder string, uid uint32) {
 	case st.jobs <- job{account: account, folder: folder, uid: uid}:
 	default:
 		slog.Warn("job queue full, dropping fetch", "account", account, "uid", uid)
+	}
+}
+
+// TrashWorker drains trashJobs in the background, batching UIDs that share
+// the same (account, folder) into a single IMAP UID MOVE command. This
+// transforms N sequential round-trips (one per message) into at most
+// ceil(N/trashBatchSize) commands per folder — critical for bulk deletes.
+//
+// The worker collects the first available job then drains the channel for a
+// short window before issuing IMAP commands. Jobs arriving during that window
+// are merged into the same batch, so a TUI that fires 100 trash requests in
+// rapid succession pays roughly one IMAP command instead of 100.
+//
+// Exported so tests can drive it directly without going through Serve.
+func (st *State) TrashWorker(ctx context.Context) {
+	type folderKey struct{ account, folder string }
+	const drainWindow = 100 * time.Millisecond
+
+	for {
+		var first trashJob
+		select {
+		case <-ctx.Done():
+			return
+		case j, ok := <-st.trashJobs:
+			if !ok {
+				return
+			}
+			first = j
+		}
+
+		batch := map[folderKey][]uint32{
+			{first.account, first.folder}: {first.uid},
+		}
+		timer := time.NewTimer(drainWindow)
+	draining:
+		for {
+			select {
+			case j, ok := <-st.trashJobs:
+				if !ok {
+					timer.Stop()
+					break draining
+				}
+				k := folderKey{j.account, j.folder}
+				batch[k] = append(batch[k], j.uid)
+			case <-timer.C:
+				break draining
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		}
+
+		for k, uids := range batch {
+			ac := st.lookupAccount(k.account)
+			if ac == nil || ac.provider == nil {
+				continue
+			}
+			for len(uids) > 0 {
+				chunk := uids
+				if len(chunk) > trashBatchSize {
+					chunk, uids = uids[:trashBatchSize], uids[trashBatchSize:]
+				} else {
+					uids = nil
+				}
+				opCtx, cancel := context.WithTimeout(ctx, OpRequestTimeout)
+				if err := ac.provider.TrashBatch(opCtx, k.folder, chunk); err != nil {
+					slog.Warn("trash worker", "account", k.account, "folder", k.folder, "count", len(chunk), "err", err)
+				}
+				cancel()
+			}
+		}
+	}
+}
+
+// enqueueTrash queues a trash operation for the background worker. The local
+// cache row must already be removed by the caller before enqueuing.
+func (st *State) enqueueTrash(account, folder string, uid uint32) {
+	select {
+	case st.trashJobs <- trashJob{account: account, folder: folder, uid: uid}:
+	default:
+		slog.Warn("trash queue full, dropping", "account", account, "uid", uid)
 	}
 }

@@ -31,6 +31,7 @@ func (s *stubStore) ListMessages(_ context.Context, _ string, _ int) ([]types.Me
 func (s *stubStore) GetMessage(_ context.Context, _ string, _ uint32) (*types.Message, error) {
 	return s.msg, s.err
 }
+func (s *stubStore) DeleteMessage(_ context.Context, _ string, _ uint32) error { return s.err }
 
 func newState(st server.MailStore) *server.State {
 	s := server.NewState(events.NewBus())
@@ -71,9 +72,10 @@ func (p *stubProvider) MarkRead(ctx context.Context, folder string, uid uint32) 
 	return nil
 }
 
-func (p *stubProvider) MarkUnread(context.Context, string, uint32) error      { return nil }
-func (p *stubProvider) Trash(context.Context, string, uint32) error           { return nil }
-func (p *stubProvider) PermanentDelete(context.Context, string, uint32) error { return nil }
+func (p *stubProvider) MarkUnread(context.Context, string, uint32) error         { return nil }
+func (p *stubProvider) Trash(context.Context, string, uint32) error              { return nil }
+func (p *stubProvider) TrashBatch(context.Context, string, []uint32) error       { return nil }
+func (p *stubProvider) PermanentDelete(context.Context, string, uint32) error    { return nil }
 func (p *stubProvider) SyncFolder(context.Context, string) error              { return nil }
 func (p *stubProvider) ResolveSentFolder(context.Context) (string, error) {
 	return "[Gmail]/Sent Mail", nil

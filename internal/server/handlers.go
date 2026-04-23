@@ -123,11 +123,30 @@ func (st *State) HandleMarkUnread(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleTrash moves a message to the account's Trash mailbox.
+// HandleTrash enqueues a message for background trashing. The local cache row
+// is removed synchronously so a concurrent sync pass cannot resurrect it
+// before the IMAP MOVE completes. Returns 202 Accepted immediately; the
+// actual IMAP work is serialised and batched by the trash worker.
 func (st *State) HandleTrash(w http.ResponseWriter, r *http.Request) {
-	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
-		return ac.provider.Trash(r.Context(), folder, uid)
-	})
+	ac, ok := st.accountFromRequest(w, r)
+	if !ok {
+		return
+	}
+	if ac.provider == nil {
+		http.Error(w, "no provider", http.StatusServiceUnavailable)
+		return
+	}
+	folder := r.PathValue("folder")
+	uid, err := strconv.ParseUint(r.PathValue("uid"), 10, 32)
+	if err != nil {
+		http.Error(w, "invalid uid", http.StatusBadRequest)
+		return
+	}
+	if err := ac.store.DeleteMessage(r.Context(), folder, uint32(uid)); err != nil {
+		slog.Warn("HandleTrash: delete from store", "account", ac.email, "folder", folder, "uid", uid, "err", err)
+	}
+	st.enqueueTrash(ac.email, folder, uint32(uid))
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // HandlePermanentDelete expunges a message with no recycle step. Expected

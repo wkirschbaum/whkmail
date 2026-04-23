@@ -17,6 +17,7 @@ type MailStore interface {
 	ListFolders(ctx context.Context) ([]types.Folder, error)
 	ListMessages(ctx context.Context, folder string, limit int) ([]types.Message, error)
 	GetMessage(ctx context.Context, folder string, uid uint32) (*types.Message, error)
+	DeleteMessage(ctx context.Context, folder string, uid uint32) error
 }
 
 // MailProvider is the protocol interface for fetching and updating mail on the
@@ -31,6 +32,11 @@ type MailProvider interface {
 	// trash/bin mailbox. For Gmail this is the [Gmail]/Trash mailbox — it
 	// differs from \Deleted+EXPUNGE semantics in classic IMAP.
 	Trash(ctx context.Context, folder string, uid uint32) error
+
+	// TrashBatch moves multiple messages from folder into the trash mailbox
+	// in a single IMAP UID MOVE command. The caller handles local cache
+	// removal; this method is IMAP-only.
+	TrashBatch(ctx context.Context, folder string, uids []uint32) error
 
 	// PermanentDelete removes a message with no recycling. For IMAP this
 	// is STORE +FLAGS.SILENT (\Deleted) followed by UID EXPUNGE. Expected
@@ -64,6 +70,13 @@ type job struct {
 	uid     uint32
 }
 
+// trashJob is a unit of work for the background trash worker.
+type trashJob struct {
+	account string
+	folder  string
+	uid     uint32
+}
+
 // accountState holds the per-account runtime state owned by the server.
 type accountState struct {
 	email    string
@@ -79,10 +92,11 @@ type accountState struct {
 
 // State is shared between all HTTP handlers.
 type State struct {
-	mu       sync.RWMutex
-	accounts map[string]*accountState
-	bus      *events.Bus
-	jobs     chan job
+	mu         sync.RWMutex
+	accounts   map[string]*accountState
+	bus        *events.Bus
+	jobs       chan job
+	trashJobs  chan trashJob
 }
 
 // AccountOption customises an account registration. See WithCancel and
@@ -104,9 +118,10 @@ func WithSender(sender MailSender) AccountOption {
 // NewState creates a new server State backed by the given event bus.
 func NewState(bus *events.Bus) *State {
 	return &State{
-		accounts: make(map[string]*accountState),
-		bus:      bus,
-		jobs:     make(chan job, 64),
+		accounts:  make(map[string]*accountState),
+		bus:       bus,
+		jobs:      make(chan job, 64),
+		trashJobs: make(chan trashJob, 512),
 	}
 }
 
