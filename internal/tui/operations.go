@@ -91,13 +91,15 @@ func (m *Model) popIfViewing(folder string, uid uint32) {
 	}
 }
 
-// removeLocalMessage drops a row from m.messages and keeps the cursor +
-// viewport in a sensible place.
+// removeLocalMessage drops a row from m.messages, keeps the cursor +
+// viewport in a sensible place, and decrements the matching folder's counts
+// so the folder sidebar reflects the deletion without waiting for a sync.
 func (m *Model) removeLocalMessage(folder string, uid uint32) {
 	idx := messageIndex(m.messages, folder, uid)
 	if idx < 0 {
 		return
 	}
+	msg := m.messages[idx]
 	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
 	if m.cursor >= len(m.messages) {
 		m.cursor = len(m.messages) - 1
@@ -106,6 +108,18 @@ func (m *Model) removeLocalMessage(folder string, uid uint32) {
 		m.cursor = 0
 	}
 	m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
+
+	for i := range m.folders {
+		if m.folders[i].Name == folder {
+			if m.folders[i].MessageCount > 0 {
+				m.folders[i].MessageCount--
+			}
+			if msg.Unread && m.folders[i].Unread > 0 {
+				m.folders[i].Unread--
+			}
+			break
+		}
+	}
 }
 
 // mergeFetched writes a freshly-fetched message into the local cache and
