@@ -89,6 +89,18 @@ func markUnreadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	}
 }
 
+// saveStyleCmd persists the chosen input style. Kept as a tea.Cmd so the
+// key handler stays pure and disk failures surface through the usual
+// msgErr path instead of being silently dropped.
+func saveStyleCmd(style InputStyle) tea.Cmd {
+	return func() tea.Msg {
+		if err := saveInputStyle(style); err != nil {
+			return msgErr{err}
+		}
+		return nil
+	}
+}
+
 func trashCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)

@@ -140,9 +140,10 @@ func threadMessages(msgs []types.Message) ([]types.Message, []int) {
 }
 
 // visibleBodyRows returns the number of body lines that fit on screen in the
-// message detail view. Chrome = up to 7 header lines + 3 footer lines.
+// message detail view. Chrome = up to 7 header lines + 1 blank separator +
+// status bar.
 func (m Model) visibleBodyRows() int {
-	const chrome = 10
+	const chrome = 8
 	n := m.height - chrome
 	if n < 1 {
 		return 1
@@ -166,9 +167,10 @@ func (m Model) bodyLines() []string {
 }
 
 // visibleRows returns the number of message rows the terminal can show at
-// once, accounting for the header and footer lines rendered around the list.
+// once, accounting for the header lines and the status bar rendered around
+// the list.
 func (m Model) visibleRows() int {
-	// 3 = account/folder line + header line + help line.
+	// 3 = account/folder line + header line + status bar.
 	const chrome = 3
 	n := m.height - chrome
 	if n < 1 {

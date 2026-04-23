@@ -50,7 +50,7 @@ func main() {
 	}
 
 	client := tui.NewClient()
-	m := tui.NewModel(client, loadMarkReadDelay())
+	m := tui.NewModel(client, loadMarkReadDelay(), tui.LoadInputStyle())
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

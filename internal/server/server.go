@@ -16,6 +16,25 @@ import (
 	"github.com/wkirschbaum/whkmail/internal/events"
 )
 
+// Timeouts for daemon-side work. Kept generous so Gmail's slower edge
+// cases (big HTML bodies, high-latency mobile links) don't time out
+// mid-operation, but bounded so a wedged IMAP session can't stall a
+// handler forever.
+const (
+	// OpRequestTimeout bounds one-shot IMAP operations invoked from an
+	// HTTP handler (MarkRead / MarkUnread / Trash / PermanentDelete).
+	OpRequestTimeout = 30 * time.Second
+
+	// BodyFetchTimeout bounds one background body-fetch job. Longer than
+	// OpRequestTimeout because bodies can be multi-MB and Gmail attaches
+	// MIME parts liberally.
+	BodyFetchTimeout = 60 * time.Second
+
+	// ShutdownGrace is how long Serve waits for in-flight HTTP handlers
+	// to finish when ctx is cancelled before it force-closes.
+	ShutdownGrace = 5 * time.Second
+)
+
 // Serve binds the Unix socket, starts the background goroutines, and blocks
 // until ctx is cancelled.
 func Serve(ctx context.Context, st *State) error {
@@ -43,7 +62,7 @@ func Serve(ctx context.Context, st *State) error {
 	srv := &http.Server{Handler: mux}
 	go func() {
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), ShutdownGrace)
 		defer cancel()
 		if err := srv.Shutdown(shutCtx); err != nil {
 			slog.Warn("shutdown", "err", err)
@@ -59,8 +78,8 @@ func Serve(ctx context.Context, st *State) error {
 // trackSyncState watches the bus and toggles each account's `syncing` flag
 // so /status reports accurate live state without polling the IMAP client.
 func (st *State) trackSyncState(ctx context.Context) {
-	eventCh := st.Bus.Subscribe(32)
-	defer st.Bus.Unsubscribe(eventCh)
+	eventCh := st.bus.Subscribe(32)
+	defer st.bus.Unsubscribe(eventCh)
 	for {
 		select {
 		case <-ctx.Done():
@@ -97,7 +116,7 @@ func (st *State) Worker(ctx context.Context) {
 			if !ok {
 				return
 			}
-			st.Bus.Publish(st.runBodyFetch(j))
+			st.bus.Publish(st.runBodyFetch(j))
 		}
 	}
 }
@@ -106,28 +125,23 @@ func (st *State) Worker(ctx context.Context) {
 // Always returns an event (success or failure) so a TUI waiting on the body
 // never hangs on a silently-dropped job.
 func (st *State) runBodyFetch(j job) events.Event {
-	ev := events.Event{
-		Kind:    events.KindBodyReady,
-		Account: j.account,
-		Folder:  j.folder,
-		UID:     j.uid,
-	}
+	reason := ""
 	ac := st.lookupAccount(j.account)
 	switch {
 	case ac == nil:
-		ev.Error = "unknown account"
+		reason = "unknown account"
 	case ac.provider == nil:
-		ev.Error = "no provider configured"
+		reason = "no provider configured"
 	default:
-		fetchCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		fetchCtx, cancel := context.WithTimeout(context.Background(), BodyFetchTimeout)
 		_, err := ac.provider.FetchBody(fetchCtx, j.folder, j.uid)
 		cancel()
 		if err != nil {
 			slog.Warn("worker: fetch body", "account", j.account, "uid", j.uid, "err", err)
-			ev.Error = err.Error()
+			reason = err.Error()
 		}
 	}
-	return ev
+	return events.BodyReadyEvent(j.account, j.folder, j.uid, reason)
 }
 
 // enqueueBodyFetch hands a fetch request to the worker queue. Drops with a

@@ -1,3 +1,5 @@
-bin/
-whkmail
-maild
+/bin/
+/whkmail
+/whkmaild
+/maild
+/mail

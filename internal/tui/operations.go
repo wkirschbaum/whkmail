@@ -11,11 +11,11 @@ import (
 // mark-as-read tick. It reads the body from the local cache when available so
 // re-opening a previously read message is instant. Prefetches the next two
 // messages after the cursor to warm the cache for likely-next navigation.
-func (m Model) openMessage(uid uint32) (tea.Model, tea.Cmd) {
+func (m Model) openMessage(uid uint32) (Model, tea.Cmd) {
 	m.view = viewMessage
 	m.bodyTop = 0
-	m.markReadGen++
-	gen := m.markReadGen
+	m.mark.gen++
+	gen := m.mark.gen
 
 	// Seed m.message from the list so the header area renders immediately.
 	// The body will either be present (cached) or filled in when the fetch
@@ -31,7 +31,7 @@ func (m Model) openMessage(uid uint32) (tea.Model, tea.Cmd) {
 	m.message = &cp
 
 	cmds := []tea.Cmd{
-		tea.Tick(m.markReadDelay, func(time.Time) tea.Msg {
+		tea.Tick(m.mark.delay, func(time.Time) tea.Msg {
 			return tickMarkRead{gen: gen, account: m.account, folder: m.folder, uid: uid}
 		}),
 	}
@@ -87,7 +87,7 @@ func (m *Model) popIfViewing(folder string, uid uint32) {
 		m.message.UID == uid && m.message.Folder == folder {
 		m.view = viewMessages
 		m.message = nil
-		m.markReadGen++
+		m.mark.gen++
 	}
 }
 

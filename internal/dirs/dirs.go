@@ -23,6 +23,7 @@ func StateDir() string {
 }
 
 func ConfigFile() string      { return filepath.Join(ConfigDir(), "config.json") }
+func TUIConfigFile() string   { return filepath.Join(ConfigDir(), "tui.json") }
 func CredentialsFile() string { return filepath.Join(ConfigDir(), "credentials.json") }
 func DBFile() string          { return filepath.Join(StateDir(), "mail.db") }
 func LockFile() string        { return filepath.Join(StateDir(), "whkmaild.lock") }

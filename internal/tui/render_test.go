@@ -103,6 +103,75 @@ func TestPadRight(t *testing.T) {
 	}
 }
 
+func TestHelpSections_ReflectStyle(t *testing.T) {
+	vim := Model{style: StyleVim, view: viewMessages}
+	sections := vim.helpSections()
+	// Flatten to a single string for substring checks.
+	var vimText strings.Builder
+	for _, s := range sections {
+		vimText.WriteString(s.title + "\n")
+		for _, e := range s.entries {
+			vimText.WriteString(e.key + " " + e.desc + "\n")
+		}
+	}
+	vimOut := vimText.String()
+	for _, want := range []string{"j/k move up/down", "s mark read", "N mark unread", "C-d quit", "? toggle this help"} {
+		if !strings.Contains(vimOut, want) {
+			t.Errorf("vim help popup missing %q:\n%s", want, vimOut)
+		}
+	}
+
+	emacs := Model{style: StyleEmacs, view: viewMessages}
+	var emacsText strings.Builder
+	for _, s := range emacs.helpSections() {
+		for _, e := range s.entries {
+			emacsText.WriteString(e.key + " " + e.desc + "\n")
+		}
+	}
+	emacsOut := emacsText.String()
+	for _, want := range []string{"↓/↑ move up/down", "! mark read"} {
+		if !strings.Contains(emacsOut, want) {
+			t.Errorf("emacs help popup missing %q:\n%s", want, emacsOut)
+		}
+	}
+}
+
+func TestHelpSections_FlagsActiveView(t *testing.T) {
+	m := Model{style: StyleVim, view: viewMessages}
+	var activeTitles []string
+	for _, s := range m.helpSections() {
+		if s.active {
+			activeTitles = append(activeTitles, s.title)
+		}
+	}
+	if len(activeTitles) != 1 || activeTitles[0] != "Messages (list)" {
+		t.Errorf("expected exactly 'Messages (list)' to be active, got %v", activeTitles)
+	}
+}
+
+func TestRenderHelpPopup_IncludesGlobalAndContextual(t *testing.T) {
+	m := Model{style: StyleVim, view: viewMessage, width: 80}
+	out := renderHelpBody(m)
+	for _, want := range []string{"Global", "Message (detail)", "current view", "Press any key"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("popup missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderStylePickerBody_HighlightsCursor(t *testing.T) {
+	out := renderStylePickerBody(1) // emacs row highlighted
+	if !strings.Contains(out, "Input style") {
+		t.Errorf("popup missing header: %s", out)
+	}
+	if !strings.Contains(out, "vim") || !strings.Contains(out, "emacs") {
+		t.Errorf("popup missing style rows: %s", out)
+	}
+	if !strings.Contains(out, "enter: apply") {
+		t.Errorf("popup missing action hint: %s", out)
+	}
+}
+
 func TestFormatMessageRow_Shape(t *testing.T) {
 	msg := types.Message{
 		From:    "Alice <alice@example.com>",

@@ -14,14 +14,14 @@ type Folder struct {
 }
 
 type Message struct {
-	UID      uint32    `json:"uid"`
-	Folder   string    `json:"folder"`
-	Subject  string    `json:"subject"`
-	From     string    `json:"from"`
-	To       string    `json:"to"`
-	Date     time.Time `json:"date"`
-	Unread   bool      `json:"unread"`
-	Flagged  bool      `json:"flagged"`
+	UID         uint32    `json:"uid"`
+	Folder      string    `json:"folder"`
+	Subject     string    `json:"subject"`
+	From        string    `json:"from"`
+	To          string    `json:"to"`
+	Date        time.Time `json:"date"`
+	Unread      bool      `json:"unread"`
+	Flagged     bool      `json:"flagged"`
 	Draft       bool      `json:"draft,omitempty"`
 	BodyText    string    `json:"body_text,omitempty"`
 	BodyFetched bool      `json:"body_fetched,omitempty"`

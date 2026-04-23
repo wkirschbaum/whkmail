@@ -3,36 +3,71 @@ package tui
 import (
 	"fmt"
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
-	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
-var (
-	styleSelected = lipgloss.NewStyle().Reverse(true)
-	styleUnread   = lipgloss.NewStyle().Bold(true)
-	styleDraft    = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("11"))
-	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleHeader   = lipgloss.NewStyle().Bold(true).Underline(true)
-	styleMuted    = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-)
-
+// View is bubbletea's single rendering entry point. It routes around the
+// three modal overlays (error page, help popup, config popup) before
+// delegating to the per-view body renderer, then wraps the body in
+// frame() so the status bar lands on the last row.
 func (m Model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("error: %v\n\nPress r to retry or q to quit.", m.err)
+		return fmt.Sprintf("error: %v\n\nPress %s to retry or %s to quit.",
+			m.err, m.style.Key(ActRefresh), m.style.Key(ActQuit))
+	}
+	// Overlay modals (help, style picker) replace the whole view so the
+	// user's eye is undistracted. Inline modals (confirm) flow through
+	// frame() and only take over the status bar.
+	if m.modal != nil && m.modal.overlay() {
+		return m.modal.render(m)
 	}
 
+	var body string
 	switch m.view {
 	case viewAccounts:
-		return m.renderAccounts()
+		body = m.renderAccounts()
 	case viewFolders:
-		return m.renderFolders()
+		body = m.renderFolders()
 	case viewMessages:
-		return m.renderMessages()
+		body = m.renderMessages()
 	case viewMessage:
-		return m.renderMessage()
+		body = m.renderMessage()
 	}
-	return ""
+	return m.frame(body)
+}
+
+// frame composes the view with the status bar pinned to the last row of
+// the terminal. Content is padded with blank lines so the chrome always
+// lands on the last row regardless of body length. An inline modal
+// (confirm prompt) replaces the status bar outright — the prompt needs
+// the full width and its own colour treatment.
+func (m Model) frame(body string) string {
+	bottom := m.renderStatusBar()
+	if m.modal != nil && !m.modal.overlay() {
+		bottom = m.modal.render(m)
+	}
+
+	trimmed := strings.TrimRight(body, "\n")
+	bodyLines := 0
+	if trimmed != "" {
+		bodyLines = strings.Count(trimmed, "\n") + 1
+	}
+
+	var pad string
+	if m.height > 0 {
+		avail := m.height - 1 // one row reserved for the status bar
+		if p := avail - bodyLines; p > 0 {
+			pad = strings.Repeat("\n", p)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(trimmed)
+	if pad != "" {
+		sb.WriteString(pad)
+	}
+	sb.WriteString("\n")
+	sb.WriteString(bottom)
+	return sb.String()
 }
 
 func (m Model) renderAccounts() string {
@@ -57,7 +92,6 @@ func (m Model) renderAccounts() string {
 	if len(m.accounts) == 0 {
 		b.WriteString(styleDim.Render("  No accounts yet.") + "\n")
 	}
-	b.WriteString("\n" + styleDim.Render("enter: open  r: refresh  q: quit"))
 	return b.String()
 }
 
@@ -85,7 +119,6 @@ func (m Model) renderFolders() string {
 	if len(m.folders) == 0 {
 		b.WriteString(styleDim.Render("  No folders yet. Daemon may still be syncing.") + "\n")
 	}
-	b.WriteString("\n" + styleDim.Render("enter: open  r: refresh  q: quit"))
 	return b.String()
 }
 
@@ -111,7 +144,6 @@ func (m Model) renderMessages() string {
 
 	if len(m.messages) == 0 {
 		b.WriteString(styleDim.Render("  No messages.") + "\n")
-		b.WriteString(styleDim.Render("j/k: move  enter: open  r: refresh  esc: back  q: quit"))
 		return b.String()
 	}
 
@@ -136,31 +168,7 @@ func (m Model) renderMessages() string {
 		}
 		b.WriteString("\n")
 	}
-
-	b.WriteString(m.footer("j/k: move  enter: open  s/!: read  N/?: unread  d: trash  r: refresh  esc: back  q: quit"))
 	return b.String()
-}
-
-// footer renders the confirmation prompt when one is pending, otherwise the
-// supplied help text.
-func (m Model) footer(help string) string {
-	if m.confirmPrompt != "" {
-		return styleMuted.Render(m.confirmPrompt)
-	}
-	return styleDim.Render(help)
-}
-
-// messageStyle returns the lipgloss style for a non-selected message row.
-// Unread is bold, drafts are italic yellow, everything else is dim.
-func messageStyle(msg types.Message) lipgloss.Style {
-	switch {
-	case msg.Unread:
-		return styleUnread
-	case msg.Draft:
-		return styleDraft
-	default:
-		return styleDim
-	}
 }
 
 func (m Model) renderMessage() string {
@@ -202,96 +210,5 @@ func (m Model) renderMessage() string {
 	default:
 		b.WriteString(styleMuted.Render("Loading…"))
 	}
-	b.WriteString("\n\n" + m.footer("j/k: scroll  n/p: next/prev  N/?: unread  d: trash  r: refresh  esc: back  q: quit"))
 	return b.String()
-}
-
-// threadIndent returns the visual prefix for a message row based on its depth.
-// Depth 0 (root) gets no prefix; replies get "  " per ancestor level plus "↳ ".
-func threadIndent(depths []int, i int) string {
-	if i >= len(depths) || depths[i] == 0 {
-		return ""
-	}
-	d := depths[i]
-	return strings.Repeat("  ", d-1) + "↳ "
-}
-
-func formatMessageRow(msg types.Message, width int) string {
-	date := msg.Date.Format("Jan 02")
-	flag := " "
-	if msg.Unread {
-		flag = "●"
-	}
-	fromWidth := 24
-	dateWidth := 6
-	// flag + space + from + 2 + subject + 2 + date
-	subjectWidth := width - 1 - 1 - fromWidth - 2 - 2 - dateWidth
-	if subjectWidth < 10 {
-		subjectWidth = 40
-	}
-	from := truncate(msg.From, fromWidth)
-	subject := truncate(msg.Subject, subjectWidth)
-	return fmt.Sprintf("%s %-*s  %-*s  %s", flag, fromWidth, from, subjectWidth, subject, date)
-}
-
-// padRight pads s with spaces so the visible width reaches width runes.
-// Used so the selected-row background extends to the right edge.
-func padRight(s string, width int) string {
-	diff := width - len([]rune(s))
-	if diff <= 0 {
-		return s
-	}
-	return s + strings.Repeat(" ", diff)
-}
-
-// truncate shortens s to at most max runes, appending "…" if cut.
-func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	if max <= 1 {
-		return "…"
-	}
-	return string(runes[:max-1]) + "…"
-}
-
-// wrapBody wraps long lines in a plain-text body at word boundaries.
-// Existing line breaks are preserved.
-func wrapBody(text string, width int) string {
-	if width <= 10 {
-		return text
-	}
-	lines := strings.Split(text, "\n")
-	var out []string
-	for _, line := range lines {
-		out = append(out, wrapLine(line, width))
-	}
-	return strings.Join(out, "\n")
-}
-
-func wrapLine(line string, width int) string {
-	runes := []rune(line)
-	if len(runes) <= width {
-		return line
-	}
-	var parts []string
-	for len(runes) > width {
-		cut := width
-		for cut > 0 && runes[cut-1] != ' ' {
-			cut--
-		}
-		if cut == 0 {
-			cut = width
-		}
-		parts = append(parts, string(runes[:cut]))
-		runes = runes[cut:]
-		for len(runes) > 0 && runes[0] == ' ' {
-			runes = runes[1:]
-		}
-	}
-	if len(runes) > 0 {
-		parts = append(parts, string(runes))
-	}
-	return strings.Join(parts, "\n")
 }

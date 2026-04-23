@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"time"
 
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
@@ -105,7 +104,7 @@ func (st *State) HandleMessage(w http.ResponseWriter, r *http.Request) {
 // for the configured delay.
 func (st *State) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
 	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), OpRequestTimeout)
 		defer cancel()
 		return ac.provider.MarkRead(ctx, folder, uid)
 	})
@@ -115,7 +114,7 @@ func (st *State) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
 // cache. Invoked by the TUI when the user explicitly marks a message unread.
 func (st *State) HandleMarkUnread(w http.ResponseWriter, r *http.Request) {
 	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), OpRequestTimeout)
 		defer cancel()
 		return ac.provider.MarkUnread(ctx, folder, uid)
 	})
@@ -154,8 +153,8 @@ func (st *State) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := st.Bus.Subscribe(32)
-	defer st.Bus.Unsubscribe(ch)
+	ch := st.bus.Subscribe(32)
+	defer st.bus.Unsubscribe(ch)
 
 	rc := http.NewResponseController(w)
 	enc := json.NewEncoder(w)

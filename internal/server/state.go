@@ -60,7 +60,7 @@ type accountState struct {
 type State struct {
 	mu       sync.RWMutex
 	accounts map[string]*accountState
-	Bus      *events.Bus
+	bus      *events.Bus
 	jobs     chan job
 }
 
@@ -77,7 +77,7 @@ func WithCancel(cancel context.CancelFunc) AccountOption {
 func NewState(bus *events.Bus) *State {
 	return &State{
 		accounts: make(map[string]*accountState),
-		Bus:      bus,
+		bus:      bus,
 		jobs:     make(chan job, 64),
 	}
 }

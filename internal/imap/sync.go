@@ -19,6 +19,38 @@ import (
 // guards the one-shot methods (FetchBody, MarkRead, Trash, PermanentDelete)
 // which each dial a fresh connection.
 
+// Tunings baselined for Gmail. Gmail IMAP documents / enforces:
+//
+//   - IDLE timeout: ~29 minutes before the server drops an idle client.
+//   - Concurrent IMAP connections: 15 per account.
+//   - Commands are rate-limited per session; bandwidth ~2.5 GB/day per account.
+//
+// The Syncer opens 2 connections per account (one for the sync loop, one
+// cached for one-shot ops), well under the 15 cap. The values below pick
+// safe margins against the other limits.
+const (
+	// errorRetryDelay is how long Run waits before restarting after a
+	// sync error. Short enough that transient network blips resolve
+	// quickly; long enough that we don't hot-loop on a persistent failure.
+	errorRetryDelay = 30 * time.Second
+
+	// idleKeepalive is the ceiling on one IDLE round-trip. Gmail drops
+	// idle connections around 29 minutes; closing at 20 gives us a 9-min
+	// buffer and forces a fresh re-sync if no push has arrived.
+	idleKeepalive = 20 * time.Minute
+
+	// pollInterval is the IDLE-fallback cadence. Only used if the server
+	// doesn't advertise CAP IDLE (essentially never for Gmail). 5 minutes
+	// keeps the daemon responsive without being a polling fire hose.
+	pollInterval = 5 * time.Minute
+
+	// initialFetchLimit bounds how many messages the initial (or
+	// UIDVALIDITY-rewind) sync pulls per folder. Newer messages come
+	// through incremental deltas; older messages are fetched on demand
+	// when the user scrolls back.
+	initialFetchLimit = 200
+)
+
 // Run performs an initial sync then idles, re-syncing on IDLE notifications.
 // Blocks until ctx is cancelled.
 func (s *Syncer) Run(ctx context.Context) {
@@ -27,11 +59,11 @@ func (s *Syncer) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("sync error, retrying in 30s", "err", err)
+			slog.Error("sync error, retrying", "err", err, "delay", errorRetryDelay)
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(30 * time.Second):
+			case <-time.After(errorRetryDelay):
 			}
 		}
 	}
@@ -44,13 +76,13 @@ func (s *Syncer) run(ctx context.Context) error {
 	}
 	defer func() { _ = c.Close() }()
 
-	s.bus.Publish(events.Event{Kind: events.KindSyncStarted, Account: s.email})
+	s.bus.Publish(events.SyncStartedEvent(s.email))
 
 	if err := s.syncFolders(ctx, c); err != nil {
 		return fmt.Errorf("sync folders: %w", err)
 	}
 
-	s.bus.Publish(events.Event{Kind: events.KindSyncDone, Account: s.email})
+	s.bus.Publish(events.SyncDoneEvent(s.email))
 
 	return s.idle(ctx, c)
 }
@@ -60,7 +92,9 @@ func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 	if err != nil {
 		return err
 	}
-	for _, mb := range data {
+	total := len(data)
+	for i, mb := range data {
+		s.bus.Publish(events.SyncProgressEvent(s.email, mb.Mailbox, i+1, total))
 		f := types.Folder{
 			Name:      mb.Mailbox,
 			Delimiter: string(mb.Delim),
@@ -133,14 +167,7 @@ func (s *Syncer) syncMailbox(ctx context.Context, c *imapclient.Client, name str
 	}
 	for i, m := range batch {
 		if inserted[i] && m.Unread {
-			s.bus.Publish(events.Event{
-				Kind:    events.KindNewMessage,
-				Account: s.email,
-				Folder:  name,
-				UID:     m.UID,
-				Subject: m.Subject,
-				From:    m.From,
-			})
+			s.bus.Publish(events.NewMessageEvent(s.email, name, m.UID, m.Subject, m.From))
 		}
 	}
 
@@ -150,12 +177,13 @@ func (s *Syncer) syncMailbox(ctx context.Context, c *imapclient.Client, name str
 	return nil
 }
 
-// fetchRecent fetches the most recent (up to 200) messages by sequence number.
-// Used for initial syncs and post-UIDVALIDITY-change re-syncs.
+// fetchRecent fetches the most recent (up to initialFetchLimit) messages
+// by sequence number. Used for initial syncs and post-UIDVALIDITY-change
+// re-syncs. Older messages page in on demand once the user scrolls.
 func (s *Syncer) fetchRecent(c *imapclient.Client, total uint32) ([]*imapclient.FetchMessageBuffer, error) {
 	start := uint32(1)
-	if total > 200 {
-		start = total - 199
+	if total > initialFetchLimit {
+		start = total - (initialFetchLimit - 1)
 	}
 	var seqSet goimap.SeqSet
 	seqSet.AddRange(start, total)
@@ -191,7 +219,7 @@ func (s *Syncer) idle(ctx context.Context, c *imapclient.Client) error {
 			return nil
 		case idleErr = <-done:
 			// Server sent a notification; IDLE was terminated by the library.
-		case <-time.After(20 * time.Minute):
+		case <-time.After(idleKeepalive):
 			_ = idle.Close()
 			idleErr = <-done
 		}
@@ -199,26 +227,28 @@ func (s *Syncer) idle(ctx context.Context, c *imapclient.Client) error {
 			return idleErr
 		}
 
+		s.bus.Publish(events.SyncStartedEvent(s.email))
 		if err := s.syncMailbox(ctx, c, "INBOX"); err != nil {
 			slog.Warn("re-sync after idle", "err", err)
 		}
-		s.bus.Publish(events.Event{Kind: events.KindSyncDone, Account: s.email})
+		s.bus.Publish(events.SyncDoneEvent(s.email))
 	}
 }
 
 // poll is an IDLE fallback that re-syncs INBOX on a fixed interval.
 func (s *Syncer) poll(ctx context.Context, c *imapclient.Client) error {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			s.bus.Publish(events.SyncStartedEvent(s.email))
 			if err := s.syncMailbox(ctx, c, "INBOX"); err != nil {
 				slog.Warn("poll re-sync", "err", err)
 			}
-			s.bus.Publish(events.Event{Kind: events.KindSyncDone, Account: s.email})
+			s.bus.Publish(events.SyncDoneEvent(s.email))
 		}
 	}
 }
