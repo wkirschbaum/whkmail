@@ -47,6 +47,7 @@ func Serve(ctx context.Context, st *State) error {
 	go st.trackSyncState(ctx)
 	go st.Worker(ctx)
 	go st.TrashWorker(ctx)
+	go st.PermanentDeleteWorker(ctx)
 
 	mux := BuildMux(st)
 
@@ -163,26 +164,51 @@ func (st *State) enqueueBodyFetch(account, folder string, uid uint32) {
 }
 
 // TrashWorker drains trashJobs in the background, batching UIDs that share
-// the same (account, folder) into a single IMAP UID MOVE command. This
-// transforms N sequential round-trips (one per message) into at most
-// ceil(N/trashBatchSize) commands per folder — critical for bulk deletes.
-//
-// The worker collects the first available job then drains the channel for a
-// short window before issuing IMAP commands. Jobs arriving during that window
-// are merged into the same batch, so a TUI that fires 100 trash requests in
-// rapid succession pays roughly one IMAP command instead of 100.
-//
-// Exported so tests can drive it directly without going through Serve.
+// the same (account, folder) into a single IMAP UID MOVE command. Exported
+// so integration tests can drive it without going through Serve.
 func (st *State) TrashWorker(ctx context.Context) {
+	batchWorker(ctx, st.trashJobs, trashBatchSize, func(ac *accountState, folder string, chunk []uint32) {
+		opCtx, cancel := context.WithTimeout(ctx, OpRequestTimeout)
+		defer cancel()
+		if err := ac.provider.TrashBatch(opCtx, folder, chunk); err != nil {
+			slog.Warn("trash worker", "account", ac.email, "folder", folder, "count", len(chunk), "err", err)
+		}
+	}, st.lookupAccount)
+}
+
+// PermanentDeleteWorker drains deleteJobs in the background, batching UIDs
+// into a single IMAP STORE+EXPUNGE sequence per folder. Exported so
+// integration tests can drive it without going through Serve.
+func (st *State) PermanentDeleteWorker(ctx context.Context) {
+	batchWorker(ctx, st.deleteJobs, trashBatchSize, func(ac *accountState, folder string, chunk []uint32) {
+		opCtx, cancel := context.WithTimeout(ctx, OpRequestTimeout)
+		defer cancel()
+		if err := ac.provider.PermanentDeleteBatch(opCtx, folder, chunk); err != nil {
+			slog.Warn("delete worker", "account", ac.email, "folder", folder, "count", len(chunk), "err", err)
+		}
+	}, st.lookupAccount)
+}
+
+// batchWorker is the shared drain-and-batch loop used by TrashWorker and
+// PermanentDeleteWorker. It reads bgJobs from ch, collects arrivals within a
+// 100 ms window, groups by (account, folder), and calls process for each
+// chunk of up to chunkSize UIDs.
+func batchWorker(
+	ctx context.Context,
+	ch <-chan bgJob,
+	chunkSize int,
+	process func(ac *accountState, folder string, chunk []uint32),
+	lookup func(string) *accountState,
+) {
 	type folderKey struct{ account, folder string }
 	const drainWindow = 100 * time.Millisecond
 
 	for {
-		var first trashJob
+		var first bgJob
 		select {
 		case <-ctx.Done():
 			return
-		case j, ok := <-st.trashJobs:
+		case j, ok := <-ch:
 			if !ok {
 				return
 			}
@@ -196,7 +222,7 @@ func (st *State) TrashWorker(ctx context.Context) {
 	draining:
 		for {
 			select {
-			case j, ok := <-st.trashJobs:
+			case j, ok := <-ch:
 				if !ok {
 					timer.Stop()
 					break draining
@@ -212,33 +238,43 @@ func (st *State) TrashWorker(ctx context.Context) {
 		}
 
 		for k, uids := range batch {
-			ac := st.lookupAccount(k.account)
+			ac := lookup(k.account)
 			if ac == nil || ac.provider == nil {
 				continue
 			}
 			for len(uids) > 0 {
 				chunk := uids
-				if len(chunk) > trashBatchSize {
-					chunk, uids = uids[:trashBatchSize], uids[trashBatchSize:]
+				if len(chunk) > chunkSize {
+					chunk, uids = uids[:chunkSize], uids[chunkSize:]
 				} else {
 					uids = nil
 				}
-				opCtx, cancel := context.WithTimeout(ctx, OpRequestTimeout)
-				if err := ac.provider.TrashBatch(opCtx, k.folder, chunk); err != nil {
-					slog.Warn("trash worker", "account", k.account, "folder", k.folder, "count", len(chunk), "err", err)
-				}
-				cancel()
+				process(ac, k.folder, chunk)
 			}
 		}
 	}
 }
 
-// enqueueTrash queues a trash operation for the background worker. The local
-// cache row must already be removed by the caller before enqueuing.
-func (st *State) enqueueTrash(account, folder string, uid uint32) {
+// enqueueTrash blocks until a slot is available in the trash queue or ctx
+// expires. The caller must remove the message from the local cache before
+// returning success so the next sync cannot resurrect it ahead of the
+// background IMAP MOVE.
+func (st *State) enqueueTrash(ctx context.Context, account, folder string, uid uint32) error {
 	select {
-	case st.trashJobs <- trashJob{account: account, folder: folder, uid: uid}:
-	default:
-		slog.Warn("trash queue full, dropping", "account", account, "uid", uid)
+	case st.trashJobs <- bgJob{account: account, folder: folder, uid: uid}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// enqueuePermanentDelete blocks until a slot is available in the delete queue
+// or ctx expires.
+func (st *State) enqueuePermanentDelete(ctx context.Context, account, folder string, uid uint32) error {
+	select {
+	case st.deleteJobs <- bgJob{account: account, folder: folder, uid: uid}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

@@ -59,15 +59,14 @@ func discoverTrashFolder(c *imapclient.Client) (string, error) {
 }
 
 // TrashBatch moves one or more messages from folder into the account's Trash
-// mailbox in a single IMAP UID MOVE command. This is the hot path for bulk
-// deletes: N messages in the same folder cost one SELECT + one MOVE instead
-// of N round-trips. The caller is responsible for removing the messages from
-// the local cache before or after calling this method.
+// mailbox in a single IMAP UID MOVE command. Uses the dedicated bulk
+// connection so it cannot block interactive ops (FetchBody, MarkRead). The
+// caller is responsible for local cache removal.
 func (s *Syncer) TrashBatch(ctx context.Context, folder string, uids []uint32) error {
 	if len(uids) == 0 {
 		return nil
 	}
-	return s.withOpsConn(ctx, func(c *imapclient.Client) error {
+	return s.withBulkConn(ctx, func(c *imapclient.Client) error {
 		trash, err := s.resolveTrashFolder(c)
 		if err != nil {
 			return err
@@ -89,9 +88,9 @@ func (s *Syncer) TrashBatch(ctx context.Context, folder string, uids []uint32) e
 	})
 }
 
-// Trash moves a single message from folder into the account's Trash mailbox.
-// Local cache is updated to remove the source row immediately so the TUI
-// reflects the move without waiting for the next sync pass.
+// Trash moves a single message from folder into the account's Trash mailbox
+// and removes it from the local cache. Used for single-message interactive
+// deletes; bulk deletes go through the daemon's TrashWorker + TrashBatch.
 func (s *Syncer) Trash(ctx context.Context, folder string, uid uint32) error {
 	if err := s.TrashBatch(ctx, folder, []uint32{uid}); err != nil {
 		return err
@@ -102,16 +101,22 @@ func (s *Syncer) Trash(ctx context.Context, folder string, uid uint32) error {
 	return nil
 }
 
-// PermanentDelete flags the message \Deleted and expunges it — the irrecoverable
-// path. UID EXPUNGE is used when UIDPLUS is advertised so only the targeted
-// UID is purged; otherwise plain EXPUNGE is issued (Gmail's Trash only holds
-// already-trashed items so a folder-wide expunge is safe there).
-func (s *Syncer) PermanentDelete(ctx context.Context, folder string, uid uint32) error {
-	err := s.withOpsConn(ctx, func(c *imapclient.Client) error {
+// PermanentDeleteBatch flags all uids \Deleted and expunges them in a single
+// IMAP transaction. Uses the dedicated bulk connection. The caller is
+// responsible for local cache removal.
+func (s *Syncer) PermanentDeleteBatch(ctx context.Context, folder string, uids []uint32) error {
+	if len(uids) == 0 {
+		return nil
+	}
+	return s.withBulkConn(ctx, func(c *imapclient.Client) error {
 		if _, err := c.Select(folder, nil).Wait(); err != nil {
 			return fmt.Errorf("select %s: %w", folder, err)
 		}
-		uidSet := goimap.UIDSetNum(goimap.UID(uid))
+		uidList := make([]goimap.UID, len(uids))
+		for i, uid := range uids {
+			uidList[i] = goimap.UID(uid)
+		}
+		uidSet := goimap.UIDSetNum(uidList...)
 		if err := c.Store(uidSet, &goimap.StoreFlags{
 			Op:     goimap.StoreFlagsAdd,
 			Flags:  []goimap.Flag{goimap.FlagDeleted},
@@ -130,7 +135,13 @@ func (s *Syncer) PermanentDelete(ctx context.Context, folder string, uid uint32)
 		}
 		return nil
 	})
-	if err != nil {
+}
+
+// PermanentDelete flags the message \Deleted and expunges it. Used for
+// single-message interactive expunge; bulk expunge goes through
+// PermanentDeleteWorker + PermanentDeleteBatch.
+func (s *Syncer) PermanentDelete(ctx context.Context, folder string, uid uint32) error {
+	if err := s.PermanentDeleteBatch(ctx, folder, []uint32{uid}); err != nil {
 		return err
 	}
 	if err := s.store.DeleteMessage(ctx, folder, uid); err != nil {

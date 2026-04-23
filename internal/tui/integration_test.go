@@ -71,14 +71,16 @@ type fixtureProvider struct {
 	trashFn     func(folder string, uid uint32) error
 	deleteFn    func(folder string, uid uint32) error
 
-	markReadCalls  []readCall
-	trashCalls     []readCall
-	deleteCalls    []readCall
-	trashBatchCh   chan struct{} // closed on first TrashBatch call; nil means not watched
-	trashBatchCall *trashBatchArgs
+	markReadCalls      []readCall
+	trashCalls         []readCall
+	deleteCalls        []readCall
+	trashBatchCh       chan struct{} // closed on first TrashBatch call; nil means not watched
+	trashBatchCall     *batchArgs
+	deleteBatchCh      chan struct{} // closed on first PermanentDeleteBatch call
+	deleteBatchCall    *batchArgs
 }
 
-type trashBatchArgs struct {
+type batchArgs struct {
 	folder string
 	uids   []uint32
 }
@@ -145,8 +147,19 @@ func (p *fixtureProvider) PermanentDelete(_ context.Context, folder string, uid 
 
 func (p *fixtureProvider) TrashBatch(_ context.Context, folder string, uids []uint32) error {
 	p.mu.Lock()
-	p.trashBatchCall = &trashBatchArgs{folder: folder, uids: append([]uint32(nil), uids...)}
+	p.trashBatchCall = &batchArgs{folder: folder, uids: append([]uint32(nil), uids...)}
 	ch := p.trashBatchCh
+	p.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+	return nil
+}
+
+func (p *fixtureProvider) PermanentDeleteBatch(_ context.Context, folder string, uids []uint32) error {
+	p.mu.Lock()
+	p.deleteBatchCall = &batchArgs{folder: folder, uids: append([]uint32(nil), uids...)}
+	ch := p.deleteBatchCh
 	p.mu.Unlock()
 	if ch != nil {
 		close(ch)
@@ -388,19 +401,32 @@ func TestIntegration_Trash(t *testing.T) {
 	}
 }
 
+
 func TestIntegration_PermanentDelete(t *testing.T) {
-	prov := &fixtureProvider{}
-	client, _, done := newTestBackend(t, &fixtureStore{}, prov)
+	batched := make(chan struct{})
+	prov := &fixtureProvider{deleteBatchCh: batched}
+	client, st, done := newTestBackend(t, &fixtureStore{}, prov)
 	defer done()
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+	go st.PermanentDeleteWorker(workerCtx)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.PermanentDelete(ctx, itAccount, "[Gmail]/Trash", 99); err != nil {
 		t.Fatalf("PermanentDelete: %v", err)
 	}
-	calls := prov.deletes()
-	if len(calls) != 1 || calls[0].folder != "[Gmail]/Trash" || calls[0].uid != 99 {
-		t.Errorf("unexpected PermanentDelete calls: %+v", calls)
+	select {
+	case <-batched:
+	case <-time.After(time.Second):
+		t.Fatal("PermanentDeleteWorker did not pick up the delete job")
+	}
+	prov.mu.Lock()
+	got := prov.deleteBatchCall
+	prov.mu.Unlock()
+	if got == nil || got.folder != "[Gmail]/Trash" || len(got.uids) != 1 || got.uids[0] != 99 {
+		t.Errorf("unexpected PermanentDeleteBatch call: %+v", got)
 	}
 }
 

@@ -123,11 +123,29 @@ func (st *State) HandleMarkUnread(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleTrash enqueues a message for background trashing. The local cache row
-// is removed synchronously so a concurrent sync pass cannot resurrect it
-// before the IMAP MOVE completes. Returns 202 Accepted immediately; the
-// actual IMAP work is serialised and batched by the trash worker.
+// HandleTrash enqueues a message for background trashing. Enqueue blocks
+// until a slot is free (backpressure) or the request context expires (503).
+// On success the local cache row is removed immediately so a concurrent sync
+// cannot resurrect the message before the IMAP MOVE completes. Returns 202.
 func (st *State) HandleTrash(w http.ResponseWriter, r *http.Request) {
+	st.enqueueMutation(w, r, st.enqueueTrash)
+}
+
+// HandlePermanentDelete enqueues a message for background expunge. Same
+// async + backpressure semantics as HandleTrash.
+func (st *State) HandlePermanentDelete(w http.ResponseWriter, r *http.Request) {
+	st.enqueueMutation(w, r, st.enqueuePermanentDelete)
+}
+
+// enqueueMutation is the shared plumbing for HandleTrash and
+// HandlePermanentDelete: validates the request, calls enqueue (blocking with
+// the request context for backpressure), removes the local cache row on
+// success, and writes 202 Accepted.
+func (st *State) enqueueMutation(
+	w http.ResponseWriter,
+	r *http.Request,
+	enqueue func(ctx context.Context, account, folder string, uid uint32) error,
+) {
 	ac, ok := st.accountFromRequest(w, r)
 	if !ok {
 		return
@@ -142,19 +160,14 @@ func (st *State) HandleTrash(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid uid", http.StatusBadRequest)
 		return
 	}
-	if err := ac.store.DeleteMessage(r.Context(), folder, uint32(uid)); err != nil {
-		slog.Warn("HandleTrash: delete from store", "account", ac.email, "folder", folder, "uid", uid, "err", err)
+	if err := enqueue(r.Context(), ac.email, folder, uint32(uid)); err != nil {
+		http.Error(w, "queue full: "+err.Error(), http.StatusServiceUnavailable)
+		return
 	}
-	st.enqueueTrash(ac.email, folder, uint32(uid))
+	if err := ac.store.DeleteMessage(r.Context(), folder, uint32(uid)); err != nil {
+		slog.Warn("enqueueMutation: delete from store", "account", ac.email, "folder", folder, "uid", uid, "err", err)
+	}
 	w.WriteHeader(http.StatusAccepted)
-}
-
-// HandlePermanentDelete expunges a message with no recycle step. Expected
-// use: invoked from within the Trash mailbox after a confirmation.
-func (st *State) HandlePermanentDelete(w http.ResponseWriter, r *http.Request) {
-	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
-		return ac.provider.PermanentDelete(r.Context(), folder, uid)
-	})
 }
 
 // HandleSend delivers a composed message through the account's sender.

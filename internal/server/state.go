@@ -38,6 +38,10 @@ type MailProvider interface {
 	// removal; this method is IMAP-only.
 	TrashBatch(ctx context.Context, folder string, uids []uint32) error
 
+	// PermanentDeleteBatch flags all uids \Deleted and expunges them in one
+	// IMAP transaction. The caller handles local cache removal.
+	PermanentDeleteBatch(ctx context.Context, folder string, uids []uint32) error
+
 	// PermanentDelete removes a message with no recycling. For IMAP this
 	// is STORE +FLAGS.SILENT (\Deleted) followed by UID EXPUNGE. Expected
 	// use: invoked from inside the Trash folder after confirmation.
@@ -70,8 +74,8 @@ type job struct {
 	uid     uint32
 }
 
-// trashJob is a unit of work for the background trash worker.
-type trashJob struct {
+// bgJob is a unit of work for background mutation workers (trash, permanent-delete).
+type bgJob struct {
 	account string
 	folder  string
 	uid     uint32
@@ -92,11 +96,12 @@ type accountState struct {
 
 // State is shared between all HTTP handlers.
 type State struct {
-	mu         sync.RWMutex
-	accounts   map[string]*accountState
-	bus        *events.Bus
-	jobs       chan job
-	trashJobs  chan trashJob
+	mu          sync.RWMutex
+	accounts    map[string]*accountState
+	bus         *events.Bus
+	jobs        chan job
+	trashJobs   chan bgJob
+	deleteJobs  chan bgJob
 }
 
 // AccountOption customises an account registration. See WithCancel and
@@ -118,10 +123,11 @@ func WithSender(sender MailSender) AccountOption {
 // NewState creates a new server State backed by the given event bus.
 func NewState(bus *events.Bus) *State {
 	return &State{
-		accounts:  make(map[string]*accountState),
-		bus:       bus,
-		jobs:      make(chan job, 64),
-		trashJobs: make(chan trashJob, 512),
+		accounts:   make(map[string]*accountState),
+		bus:        bus,
+		jobs:       make(chan job, 64),
+		trashJobs:  make(chan bgJob, 4096),
+		deleteJobs: make(chan bgJob, 4096),
 	}
 }
 

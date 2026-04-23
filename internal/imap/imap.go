@@ -35,24 +35,23 @@ type Syncer struct {
 	store storage.Store
 	bus   *events.Bus
 
-	// opMu serialises the one-shot RPC-style methods (FetchBody, MarkRead,
-	// Trash, PermanentDelete) — holding it also protects opsConn and the
-	// backoff counter. Each of those methods would otherwise dial +
-	// XOAUTH2-authenticate a fresh connection per call; firing them in
-	// parallel (e.g. when the user holds `d` to trash a run of messages)
-	// slams Gmail with concurrent sessions and gets 5xx back. The long-
-	// running sync loop (Run/idle/poll) has its own dedicated connection
-	// and does not take this lock.
+	// opMu serialises interactive one-shot methods (FetchBody, MarkRead,
+	// MarkUnread) — holding it also protects opsConn and the backoff counter.
+	// The long-running sync loop has its own dedicated connection and does not
+	// take this lock. Background bulk ops (TrashBatch, PermanentDeleteBatch)
+	// use bulkMu + bulkConn so they cannot block interactive ops.
 	opMu sync.Mutex
-	// opsConn is a long-lived IMAP session reused across one-shot ops so
-	// the TCP+TLS+auth round-trip isn't paid on every trash/mark-read.
+	// opsConn is a long-lived IMAP session reused across interactive ops.
 	// Reset to nil on any operation error; the next call reconnects.
-	opsConn *imapclient.Client
-	// opFailures counts consecutive errors on opsConn. withOpsConn sleeps
-	// an exponential (capped) delay before the next op when this is > 0
-	// so a genuine rate-limit / network outage doesn't turn the TUI into
-	// a retry storm.
+	opsConn    *imapclient.Client
 	opFailures int
+
+	// bulkMu serialises background batch operations (TrashBatch,
+	// PermanentDeleteBatch) on a dedicated connection so bulk work cannot
+	// starve interactive ops waiting on opMu.
+	bulkMu       sync.Mutex
+	bulkConn     *imapclient.Client
+	bulkFailures int
 
 	trashCache trashFolderCache
 	sentCache  sentFolderCache
@@ -87,25 +86,30 @@ func (s *Syncer) connect(ctx context.Context) (*imapclient.Client, error) {
 	return c, nil
 }
 
-// withOpsConn runs fn against a cached IMAP connection, serialised across
-// callers. Responsibilities:
-//
-//   - Lazily dial + auth on first use; reuse thereafter so a burst of ops
-//     pays one handshake rather than N.
-//   - If fn fails on a reused connection, close it and retry once on a
-//     fresh connection (covers the "server dropped us while idle" case).
-//   - After a sustained failure streak, sleep a capped exponential backoff
-//     before the *next* caller's attempt so a genuine outage or rate-limit
-//     response doesn't turn into a tight retry loop.
-//
-// Does not take ctx into its backoff wait — a pending op with a 30s timeout
-// will unblock correctly when ctx is cancelled.
+// withOpsConn runs fn against the interactive ops connection, serialised across
+// callers. Lazily dials on first use; retries once on a stale connection;
+// applies exponential backoff after sustained failures.
 func (s *Syncer) withOpsConn(ctx context.Context, fn func(c *imapclient.Client) error) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	return withConn(ctx, s, &s.opsConn, &s.opFailures, fn)
+}
 
-	if delay := s.backoffDuration(); delay > 0 {
-		slog.Warn("imap: backing off before next op", "account", s.email, "delay", delay, "failures", s.opFailures)
+// withBulkConn runs fn against a dedicated bulk-ops connection so background
+// batch work (TrashBatch, PermanentDeleteBatch) cannot starve interactive ops
+// waiting on opMu. Same retry + backoff semantics as withOpsConn.
+func (s *Syncer) withBulkConn(ctx context.Context, fn func(c *imapclient.Client) error) error {
+	s.bulkMu.Lock()
+	defer s.bulkMu.Unlock()
+	return withConn(ctx, s, &s.bulkConn, &s.bulkFailures, fn)
+}
+
+// withConn is the shared implementation behind withOpsConn and withBulkConn.
+// conn and failures are pointers into the caller's Syncer fields; the caller
+// holds the appropriate mutex for the duration of this call.
+func withConn(ctx context.Context, s *Syncer, conn **imapclient.Client, failures *int, fn func(*imapclient.Client) error) error {
+	if delay := backoffDelay(*failures); delay > 0 {
+		slog.Warn("imap: backing off before next op", "account", s.email, "delay", delay, "failures", *failures)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -113,73 +117,78 @@ func (s *Syncer) withOpsConn(ctx context.Context, fn func(c *imapclient.Client) 
 		}
 	}
 
-	// Up to two attempts: the first may hit a stale cached connection, the
-	// second uses a guaranteed-fresh one. A fresh-connect failure is
-	// reported immediately — no point retrying the same dial.
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		hadCachedConn := s.opsConn != nil
-		if s.opsConn == nil {
+		hadCachedConn := *conn != nil
+		if *conn == nil {
 			c, err := s.connect(ctx)
 			if err != nil {
-				s.opFailures++
+				*failures++
 				return err
 			}
-			s.opsConn = c
+			*conn = c
 		}
-		err := fn(s.opsConn)
+		err := fn(*conn)
 		if err == nil {
-			s.opFailures = 0
+			*failures = 0
 			return nil
 		}
 		lastErr = err
-		_ = s.opsConn.Close()
-		s.opsConn = nil
+		_ = (*conn).Close()
+		*conn = nil
 		if !hadCachedConn {
-			// A fresh connection failed — don't retry, report.
-			s.opFailures++
+			*failures++
 			return err
 		}
-		// Retry once with a fresh connection.
 	}
-	s.opFailures++
+	*failures++
 	return lastErr
 }
 
-// backoffDuration returns how long to sleep before the next op. Starts at
-// 0s for the first two failures (transient noise), then grows exponentially
-// up to ~30s with jitter so successive clients don't thunder together.
-func (s *Syncer) backoffDuration() time.Duration {
-	if s.opFailures < 2 {
+// backoffDelay returns how long to sleep before the next op attempt. Zero for
+// the first two failures (transient noise), then grows exponentially up to
+// ~30 s with ±25% jitter so concurrent callers don't retry in lockstep.
+func backoffDelay(failures int) time.Duration {
+	if failures < 2 {
 		return 0
 	}
 	const (
-		base = 500 * time.Millisecond
-		cap  = 30 * time.Second
+		base    = 500 * time.Millisecond
+		ceiling = 30 * time.Second
 	)
-	shift := s.opFailures - 2
+	shift := failures - 2
 	if shift > 6 {
 		shift = 6
 	}
 	d := base << shift
-	if d > cap {
-		d = cap
+	if d > ceiling {
+		d = ceiling
 	}
-	// Jitter: ±25%.
 	jitter := time.Duration(rand.Int64N(int64(d/2))) - d/4
 	return d + jitter
 }
 
-// Close releases the cached ops connection. Called from server.RemoveAccount
-// via the optional Closer interface; safe to call on a Syncer that never
-// opened an ops connection.
+// Close releases both cached connections. Called from server.RemoveAccount
+// via the optional Closer interface.
 func (s *Syncer) Close() error {
 	s.opMu.Lock()
-	defer s.opMu.Unlock()
-	if s.opsConn == nil {
-		return nil
+	var opErr error
+	if s.opsConn != nil {
+		opErr = s.opsConn.Close()
+		s.opsConn = nil
 	}
-	err := s.opsConn.Close()
-	s.opsConn = nil
-	return err
+	s.opMu.Unlock()
+
+	s.bulkMu.Lock()
+	var bulkErr error
+	if s.bulkConn != nil {
+		bulkErr = s.bulkConn.Close()
+		s.bulkConn = nil
+	}
+	s.bulkMu.Unlock()
+
+	if opErr != nil {
+		return opErr
+	}
+	return bulkErr
 }
