@@ -235,6 +235,10 @@ func messageFromBuffer(folder string, buf *imapclient.FetchMessageBuffer) types.
 	if buf.Envelope != nil {
 		m.Subject = buf.Envelope.Subject
 		m.Date = buf.Envelope.Date
+		m.MessageID = buf.Envelope.MessageID
+		if len(buf.Envelope.InReplyTo) > 0 {
+			m.InReplyTo = buf.Envelope.InReplyTo[0]
+		}
 		if len(buf.Envelope.From) > 0 {
 			m.From = addressString(buf.Envelope.From[0])
 		}

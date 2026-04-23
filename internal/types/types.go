@@ -22,8 +22,11 @@ type Message struct {
 	Date     time.Time `json:"date"`
 	Unread   bool      `json:"unread"`
 	Flagged  bool      `json:"flagged"`
-	Draft    bool      `json:"draft,omitempty"`
-	BodyText string    `json:"body_text,omitempty"`
+	Draft       bool      `json:"draft,omitempty"`
+	BodyText    string    `json:"body_text,omitempty"`
+	BodyFetched bool      `json:"body_fetched,omitempty"`
+	MessageID   string    `json:"message_id,omitempty"`
+	InReplyTo   string    `json:"in_reply_to,omitempty"`
 }
 
 // AccountConfig holds the configuration for a single mail account.

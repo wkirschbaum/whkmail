@@ -43,8 +43,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case msgMessages:
 		m.err = nil
-		m.messages = mergeMessages(m.messages, msg.Messages)
-		// Preserve the cursor across refreshes; clamp to the new length.
+		// Remember which UID the cursor is on so we can restore it after
+		// re-threading (thread order may differ from date order).
+		var cursorUID uint32
+		if m.cursor < len(m.messages) {
+			cursorUID = m.messages[m.cursor].UID
+		}
+		merged := mergeMessages(m.messages, msg.Messages)
+		m.messages, m.msgDepths = threadMessages(merged)
+		// Restore cursor to the same UID; fall back to clamping.
+		m.cursor = 0
+		for i, msg := range m.messages {
+			if msg.UID == cursorUID {
+				m.cursor = i
+				break
+			}
+		}
 		m.cursor = clamp(m.cursor, len(m.messages)-1)
 		m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
 		m.loading = false
@@ -75,6 +89,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.message != nil && m.message.UID == msg.uid && m.message.Folder == msg.folder {
 			m.message.Unread = false
+		}
+
+	case msgMarkedUnread:
+		if msg.account != m.account {
+			return m, nil
+		}
+		for i := range m.messages {
+			if m.messages[i].UID == msg.uid && m.messages[i].Folder == msg.folder {
+				m.messages[i].Unread = true
+			}
+		}
+		if m.message != nil && m.message.UID == msg.uid && m.message.Folder == msg.folder {
+			m.message.Unread = true
 		}
 
 	case msgTrashed, msgDeleted:

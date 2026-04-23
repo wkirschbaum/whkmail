@@ -46,6 +46,9 @@ type Store interface {
 	// MarkSeen marks a message as read in the cache.
 	MarkSeen(ctx context.Context, folder string, uid uint32) error
 
+	// MarkUnseen marks a message as unread in the cache.
+	MarkUnseen(ctx context.Context, folder string, uid uint32) error
+
 	// DeleteMessage removes a single message from the cache. Used when a
 	// message is moved (e.g. trashed) or expunged on the remote; the caller
 	// is responsible for any follow-up insertion in the destination folder.

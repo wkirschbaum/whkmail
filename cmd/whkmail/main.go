@@ -31,8 +31,10 @@ func main() {
 			err = runAuth(ctx)
 		case "remove":
 			err = runRemove(ctx, os.Args[2:])
+		case "resync":
+			err = runResync(ctx, os.Args[2:])
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command: %s\n\nUsage: whkmail [setup|auth|remove]\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n\nUsage: whkmail [setup|auth|remove|resync]\n", os.Args[1])
 			os.Exit(1)
 		}
 		if err != nil {

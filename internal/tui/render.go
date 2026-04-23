@@ -127,23 +127,22 @@ func (m Model) renderMessages() string {
 	}
 	for i := top; i < end; i++ {
 		msg := m.messages[i]
-		row := formatMessageRow(msg, rowWidth-2)
-		line := "  " + row
+		prefix := threadIndent(m.msgDepths, i)
+		row := formatMessageRow(msg, rowWidth-2-len([]rune(prefix)))
 		if i == m.cursor {
-			line = "> " + row
-			b.WriteString(styleSelected.Render(padRight(line, rowWidth)))
+			b.WriteString(styleSelected.Render(padRight("> "+prefix+row, rowWidth)))
 		} else {
-			b.WriteString(messageStyle(msg).Render(line))
+			b.WriteString(messageStyle(msg).Render("  " + prefix + row))
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString(m.footer("j/k: move  g/G: top/bottom  enter: open  d: trash  r: refresh  esc: back  q: quit"))
+	b.WriteString(m.footer("j/k: move  enter: open  s/!: read  N/?: unread  d: trash  r: refresh  esc: back  q: quit"))
 	return b.String()
 }
 
 // footer renders the confirmation prompt when one is pending, otherwise the
-// supplied help text. Centralised so every view gets the same treatment.
+// supplied help text.
 func (m Model) footer(help string) string {
 	if m.confirmPrompt != "" {
 		return styleMuted.Render(m.confirmPrompt)
@@ -182,24 +181,39 @@ func (m Model) renderMessage() string {
 	b.WriteString(styleDim.Render("Date: "+msg.Date.Format("Mon, 02 Jan 2006 15:04")) + "\n")
 	b.WriteString(styleDim.Render(strings.Repeat("─", 40)) + "\n\n")
 
-	bodyWidth := m.width - 2
-	if bodyWidth < 40 {
-		bodyWidth = 80
-	}
 	switch {
 	case msg.BodyText != "":
-		body := strings.ReplaceAll(msg.BodyText, "\r\n", "\n")
-		body = strings.ReplaceAll(body, "\r", "\n")
-		b.WriteString(wrapBody(body, bodyWidth))
+		lines := m.bodyLines()
+		visible := m.visibleBodyRows()
+		start := m.bodyTop
+		end := start + visible
+		if end > len(lines) {
+			end = len(lines)
+		}
+		if start < len(lines) {
+			b.WriteString(strings.Join(lines[start:end], "\n"))
+		}
 	case m.bodyErr[prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}] != "":
 		reason := m.bodyErr[prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}]
 		b.WriteString(styleMuted.Render("Failed to load body: " + reason))
 		b.WriteString("\n" + styleDim.Render("Press r to retry."))
+	case msg.BodyFetched:
+		b.WriteString(styleDim.Render("(no text content)"))
 	default:
 		b.WriteString(styleMuted.Render("Loading…"))
 	}
-	b.WriteString("\n\n" + m.footer("j/k: next/prev  d: trash  r: refresh  esc: back  q: quit"))
+	b.WriteString("\n\n" + m.footer("j/k: scroll  n/p: next/prev  N/?: unread  d: trash  r: refresh  esc: back  q: quit"))
 	return b.String()
+}
+
+// threadIndent returns the visual prefix for a message row based on its depth.
+// Depth 0 (root) gets no prefix; replies get "  " per ancestor level plus "↳ ".
+func threadIndent(depths []int, i int) string {
+	if i >= len(depths) || depths[i] == 0 {
+		return ""
+	}
+	d := depths[i]
+	return strings.Repeat("  ", d-1) + "↳ "
 }
 
 func formatMessageRow(msg types.Message, width int) string {

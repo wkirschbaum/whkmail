@@ -49,16 +49,38 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "j", "down", " ":
+		if m.view == viewMessage {
+			return m.scrollBody(+1)
+		}
 		return m.moveCursor(+1)
 
 	case "k", "up":
+		if m.view == viewMessage {
+			return m.scrollBody(-1)
+		}
 		return m.moveCursor(-1)
 
 	case "ctrl+d", "pgdown":
+		if m.view == viewMessage {
+			return m.scrollBody(+m.visibleBodyRows() / 2)
+		}
 		return m.scrollBy(+m.visibleRows() / 2)
 
 	case "ctrl+u", "pgup":
+		if m.view == viewMessage {
+			return m.scrollBody(-m.visibleBodyRows() / 2)
+		}
 		return m.scrollBy(-m.visibleRows() / 2)
+
+	case "n", "J":
+		if m.view == viewMessage {
+			return m.jumpMessage(+1)
+		}
+
+	case "p", "K":
+		if m.view == viewMessage {
+			return m.jumpMessage(-1)
+		}
 
 	case "g":
 		if m.view == viewMessages && len(m.messages) > 0 {
@@ -119,6 +141,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.trashMessage(uid)
 
+	case "N", "?":
+		// Mark unread. In the detail view this also pops back to the list,
+		// matching the "I want to deal with this later" intent. The ack from
+		// msgMarkedUnread handles the local flag flip.
+		if m.view != viewMessages && m.view != viewMessage {
+			break
+		}
+		uid, ok := m.currentMessageUID()
+		if !ok {
+			break
+		}
+		account, folder := m.account, m.folder
+		if m.view == viewMessage {
+			m.view = viewMessages
+			m.message = nil
+			// Invalidate any in-flight auto-mark-read tick so it can't flip the
+			// message back to read after we've just unmarked it.
+			m.markReadGen++
+		}
+		return m, markUnreadCmd(m.client, account, folder, uid)
+
+	case "s", "!":
+		if m.view != viewMessages {
+			break
+		}
+		uid, ok := m.currentMessageUID()
+		if !ok {
+			break
+		}
+		return m, markReadCmd(m.client, m.account, m.folder, uid)
+
 	case "esc", "backspace":
 		switch m.view {
 		case viewAccounts:
@@ -140,9 +193,33 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// scrollBody scrolls the message body by delta lines, clamping at the ends.
+func (m Model) scrollBody(delta int) (Model, tea.Cmd) {
+	lines := m.bodyLines()
+	visible := m.visibleBodyRows()
+	maxTop := len(lines) - visible
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	m.bodyTop = clamp(m.bodyTop+delta, maxTop)
+	return m, nil
+}
+
+// jumpMessage navigates directly to the adjacent message without going through
+// the body-scroll edge mechanic.
+func (m Model) jumpMessage(delta int) (Model, tea.Cmd) {
+	next := clamp(m.cursor+delta, len(m.messages)-1)
+	if next == m.cursor {
+		return m, nil
+	}
+	m.cursor = next
+	m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
+	mm, cmd := m.openMessage(m.messages[m.cursor].UID)
+	return mm.(Model), cmd
+}
+
 // moveCursor shifts the selection by delta (-1 or +1) in whatever list the
-// current view shows. In viewMessage j/k navigates to the next/previous
-// message and re-opens it.
+// current view shows.
 func (m Model) moveCursor(delta int) (Model, tea.Cmd) {
 	switch m.view {
 	case viewAccounts:
@@ -152,34 +229,14 @@ func (m Model) moveCursor(delta int) (Model, tea.Cmd) {
 	case viewMessages:
 		m.cursor = clamp(m.cursor+delta, len(m.messages)-1)
 		m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
-	case viewMessage:
-		next := clamp(m.cursor+delta, len(m.messages)-1)
-		if next == m.cursor {
-			return m, nil
-		}
-		m.cursor = next
-		// Keep the hidden list's viewport aligned so esc-back lands on a
-		// visible cursor. openMessage also bumps the mark-read generation.
-		m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
-		mm, cmd := m.openMessage(m.messages[m.cursor].UID)
-		return mm.(Model), cmd
 	}
 	return m, nil
 }
 
-// scrollBy jumps the cursor by delta rows — used for page-scroll keys. In
-// viewMessage we fall back to single-step navigation because "half a page"
-// of messages doesn't map cleanly to the detail view.
+// scrollBy jumps the cursor by delta rows — used for page-scroll keys.
 func (m Model) scrollBy(delta int) (Model, tea.Cmd) {
 	if delta == 0 {
 		return m, nil
-	}
-	if m.view == viewMessage {
-		step := 1
-		if delta < 0 {
-			step = -1
-		}
-		return m.moveCursor(step)
 	}
 	m.cursor = clamp(m.cursor+delta, listLen(m)-1)
 	if m.view == viewMessages {

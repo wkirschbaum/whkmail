@@ -9,6 +9,7 @@ import (
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
+
 // view enumerates the screens the TUI can show. The ordering is significant
 // only insofar as the zero value (viewFolders) is the landing screen for
 // single-account installs.
@@ -56,15 +57,19 @@ type Model struct {
 	accounts []types.AccountStatus
 	account  string
 	folders  []types.Folder
-	messages []types.Message
-	message  *types.Message
-	cursor   int
-	msgTop   int // top of the visible window in the message list
+	messages  []types.Message
+	msgDepths []int // parallel to messages: thread depth of each row (0 = root)
+	message   *types.Message
+	cursor    int
+	msgTop    int // top of the visible window in the message list
 	folder   string
 	loading  bool
 	err      error
 	width    int
 	height   int
+
+	// Body scroll state for viewMessage.
+	bodyTop int // index of the first visible body line
 
 	// Mark-as-read timer state.
 	markReadDelay time.Duration
@@ -111,6 +116,11 @@ type (
 		message *types.Message // nil when the underlying fetch failed
 	}
 	msgMarkedRead struct {
+		account string
+		folder  string
+		uid     uint32
+	}
+	msgMarkedUnread struct {
 		account string
 		folder  string
 		uid     uint32

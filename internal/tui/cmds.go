@@ -78,6 +78,17 @@ func markReadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	}
 }
 
+func markUnreadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		if err := c.MarkUnread(ctx, account, folder, uid); err != nil {
+			return msgErr{err}
+		}
+		return msgMarkedUnread{account: account, folder: folder, uid: uid}
+	}
+}
+
 func trashCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)

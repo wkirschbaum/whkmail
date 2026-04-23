@@ -24,6 +24,7 @@ type MailStore interface {
 type MailProvider interface {
 	FetchBody(ctx context.Context, folder string, uid uint32) (string, error)
 	MarkRead(ctx context.Context, folder string, uid uint32) error
+	MarkUnread(ctx context.Context, folder string, uid uint32) error
 
 	// Trash moves a message from folder into the account's designated
 	// trash/bin mailbox. For Gmail this is the [Gmail]/Trash mailbox — it

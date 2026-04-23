@@ -67,6 +67,9 @@ func (s *SQLite) migrate() error {
 	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE folders ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE folders ADD COLUMN uid_next INTEGER NOT NULL DEFAULT 1`)
 	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN draft INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN body_fetched INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN in_reply_to TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -83,8 +86,8 @@ func (s *SQLite) UpsertMessage(ctx context.Context, m types.Message) (bool, erro
 const (
 	sqlInsertIgnoreMessage = `
 		INSERT OR IGNORE INTO messages
-		  (uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, body_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		  (uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, body_text, message_id, in_reply_to)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	sqlUpdateMessageHeaders = `
 		UPDATE messages SET
@@ -127,6 +130,7 @@ func (s *SQLite) UpsertMessages(ctx context.Context, msgs []types.Message) ([]bo
 		res, err := insertStmt.ExecContext(ctx,
 			m.UID, m.Folder, m.Subject, m.From, m.To, m.Date.Unix(),
 			boolInt(m.Unread), boolInt(m.Flagged), boolInt(m.Draft), m.BodyText,
+			m.MessageID, m.InReplyTo,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("insert uid %d: %w", m.UID, err)
@@ -157,7 +161,7 @@ func (s *SQLite) UpsertMessages(ctx context.Context, msgs []types.Message) ([]bo
 
 func (s *SQLite) ListMessages(ctx context.Context, folder string, limit int) ([]types.Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft
+		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, message_id, in_reply_to
 		FROM messages WHERE folder = ? ORDER BY date DESC LIMIT ?
 	`, folder, limit)
 	if err != nil {
@@ -170,7 +174,7 @@ func (s *SQLite) ListMessages(ctx context.Context, folder string, limit int) ([]
 		var m types.Message
 		var ts int64
 		var unread, flagged, draft int
-		if err := rows.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &draft); err != nil {
+		if err := rows.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &draft, &m.MessageID, &m.InReplyTo); err != nil {
 			return nil, err
 		}
 		m.Date = time.Unix(ts, 0)
@@ -184,13 +188,13 @@ func (s *SQLite) ListMessages(ctx context.Context, folder string, limit int) ([]
 
 func (s *SQLite) GetMessage(ctx context.Context, folder string, uid uint32) (*types.Message, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, body_text
+		SELECT uid, folder, subject, from_addr, to_addr, date, unread, flagged, draft, body_text, body_fetched, message_id, in_reply_to
 		FROM messages WHERE folder = ? AND uid = ?
 	`, folder, uid)
 	var m types.Message
 	var ts int64
-	var unread, flagged, draft int
-	err := row.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &draft, &m.BodyText)
+	var unread, flagged, draft, bodyFetched int
+	err := row.Scan(&m.UID, &m.Folder, &m.Subject, &m.From, &m.To, &ts, &unread, &flagged, &draft, &m.BodyText, &bodyFetched, &m.MessageID, &m.InReplyTo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -201,6 +205,7 @@ func (s *SQLite) GetMessage(ctx context.Context, folder string, uid uint32) (*ty
 	m.Unread = unread == 1
 	m.Flagged = flagged == 1
 	m.Draft = draft == 1
+	m.BodyFetched = bodyFetched == 1
 	return &m, nil
 }
 
@@ -240,7 +245,7 @@ func (s *SQLite) ListFolders(ctx context.Context) ([]types.Folder, error) {
 
 func (s *SQLite) SetBodyText(ctx context.Context, folder string, uid uint32, body string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE messages SET body_text = ? WHERE folder = ? AND uid = ?`,
+		`UPDATE messages SET body_text = ?, body_fetched = 1 WHERE folder = ? AND uid = ?`,
 		body, folder, uid)
 	return err
 }
@@ -248,6 +253,13 @@ func (s *SQLite) SetBodyText(ctx context.Context, folder string, uid uint32, bod
 func (s *SQLite) MarkSeen(ctx context.Context, folder string, uid uint32) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE messages SET unread = 0 WHERE folder = ? AND uid = ?`,
+		folder, uid)
+	return err
+}
+
+func (s *SQLite) MarkUnseen(ctx context.Context, folder string, uid uint32) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET unread = 1 WHERE folder = ? AND uid = ?`,
 		folder, uid)
 	return err
 }

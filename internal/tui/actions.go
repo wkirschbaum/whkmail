@@ -13,6 +13,7 @@ import (
 // messages after the cursor to warm the cache for likely-next navigation.
 func (m Model) openMessage(uid uint32) (tea.Model, tea.Cmd) {
 	m.view = viewMessage
+	m.bodyTop = 0
 	m.markReadGen++
 	gen := m.markReadGen
 
@@ -34,8 +35,8 @@ func (m Model) openMessage(uid uint32) (tea.Model, tea.Cmd) {
 			return tickMarkRead{gen: gen, account: m.account, folder: m.folder, uid: uid}
 		}),
 	}
-	// Only fetch the body across the wire when we don't have it cached.
-	if cached.BodyText == "" {
+	// Only fetch the body across the wire when the daemon hasn't fetched it yet.
+	if !cached.BodyFetched {
 		cmds = append(cmds, fetchMessage(m.client, m.account, m.folder, uid))
 	}
 	cmds = append(cmds, m.prefetchAfter(m.cursor+1, 2)...)

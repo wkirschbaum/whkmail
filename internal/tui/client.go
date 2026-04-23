@@ -65,6 +65,11 @@ func (c *Client) MarkRead(ctx context.Context, account, folder string, uid uint3
 	return c.post(ctx, account, folder, uid, "read")
 }
 
+// MarkUnread asks the daemon to clear the \Seen flag on a message.
+func (c *Client) MarkUnread(ctx context.Context, account, folder string, uid uint32) error {
+	return c.post(ctx, account, folder, uid, "unread")
+}
+
 // Trash moves a message to the account's Trash mailbox.
 func (c *Client) Trash(ctx context.Context, account, folder string, uid uint32) error {
 	return c.post(ctx, account, folder, uid, "trash")

@@ -70,6 +70,28 @@ func (s *Syncer) MarkRead(ctx context.Context, folder string, uid uint32) error 
 	return s.store.MarkSeen(ctx, folder, uid)
 }
 
+// MarkUnread removes the \Seen flag on the server and marks the message
+// unread=true in the cache.
+func (s *Syncer) MarkUnread(ctx context.Context, folder string, uid uint32) error {
+	err := s.withOpsConn(ctx, func(c *imapclient.Client) error {
+		if _, err := c.Select(folder, nil).Wait(); err != nil {
+			return fmt.Errorf("select %s: %w", folder, err)
+		}
+		if err := c.Store(goimap.UIDSetNum(goimap.UID(uid)), &goimap.StoreFlags{
+			Op:     goimap.StoreFlagsDel,
+			Flags:  []goimap.Flag{goimap.FlagSeen},
+			Silent: true,
+		}, nil).Close(); err != nil {
+			return fmt.Errorf("unstore seen: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return s.store.MarkUnseen(ctx, folder, uid)
+}
+
 // extractText parses a raw RFC 2822 message and returns the best plain-text body.
 // Prefers text/plain; falls back to converted text/html.
 func extractText(raw []byte) string {

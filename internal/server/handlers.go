@@ -20,6 +20,7 @@ func BuildMux(st *State) *http.ServeMux {
 	mux.HandleFunc("GET /accounts/{account}/folders/{folder}/messages", st.HandleMessages)
 	mux.HandleFunc("GET /accounts/{account}/folders/{folder}/messages/{uid}", st.HandleMessage)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/read", st.HandleMarkRead)
+	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/unread", st.HandleMarkUnread)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/trash", st.HandleTrash)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/delete", st.HandlePermanentDelete)
 	mux.HandleFunc("DELETE /accounts/{account}", st.HandleRemoveAccount)
@@ -91,8 +92,8 @@ func (st *State) HandleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Body not yet cached — enqueue a background fetch and return immediately.
-	if msg.BodyText == "" && ac.provider != nil {
+	// Body not yet fetched — enqueue a background fetch and return immediately.
+	if !msg.BodyFetched && ac.provider != nil {
 		st.enqueueBodyFetch(ac.email, folder, uint32(uid))
 	}
 
@@ -107,6 +108,16 @@ func (st *State) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		return ac.provider.MarkRead(ctx, folder, uid)
+	})
+}
+
+// HandleMarkUnread clears the \Seen flag on the server and in the local
+// cache. Invoked by the TUI when the user explicitly marks a message unread.
+func (st *State) HandleMarkUnread(w http.ResponseWriter, r *http.Request) {
+	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		return ac.provider.MarkUnread(ctx, folder, uid)
 	})
 }
 
