@@ -69,7 +69,7 @@ func (m Model) trashMessage(uid uint32) (Model, tea.Cmd) {
 	account, folder := m.account, m.folder
 	m.popIfViewing(folder, uid)
 	m.removeLocalMessage(folder, uid)
-	return m, trashCmd(m.client, account, folder, uid)
+	return m, tea.Batch(trashCmd(m.client, account, folder, uid), tea.SetWindowTitle(m.windowTitle()))
 }
 
 // permanentDelete is the trash-folder variant — expunges on the server and
@@ -77,7 +77,7 @@ func (m Model) trashMessage(uid uint32) (Model, tea.Cmd) {
 func (m Model) permanentDelete(account, folder string, uid uint32) (Model, tea.Cmd) {
 	m.popIfViewing(folder, uid)
 	m.removeLocalMessage(folder, uid)
-	return m, permanentDeleteCmd(m.client, account, folder, uid)
+	return m, tea.Batch(permanentDeleteCmd(m.client, account, folder, uid), tea.SetWindowTitle(m.windowTitle()))
 }
 
 // popIfViewing returns to viewMessages when the detail view is showing

@@ -49,6 +49,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = clamp(m.cursor, len(m.accounts)-1)
 			}
 		}
+		return m, tea.SetWindowTitle(m.windowTitle())
 
 	case msgMessages:
 		m.err = nil

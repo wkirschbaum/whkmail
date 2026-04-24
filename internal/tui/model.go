@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -201,4 +202,18 @@ type (
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(fetchStatus(m.client), waitEvent(m.eventCh))
+}
+
+// windowTitle returns the terminal window title. Shows the total unread count
+// across all folders for the current account as a leading badge so it is
+// visible in the terminal tab without the window needing focus.
+func (m Model) windowTitle() string {
+	var total uint32
+	for _, f := range m.folders {
+		total += f.Unread
+	}
+	if total == 0 {
+		return "whkmail"
+	}
+	return fmt.Sprintf("(%d) whkmail", total)
 }
