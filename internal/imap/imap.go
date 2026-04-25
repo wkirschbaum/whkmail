@@ -35,20 +35,18 @@ type Syncer struct {
 	store storage.Store
 	bus   *events.Bus
 
-	// opMu serialises interactive one-shot methods (FetchBody, MarkRead,
-	// MarkUnread) — holding it also protects opsConn and the backoff counter.
-	// The long-running sync loop has its own dedicated connection and does not
-	// take this lock. Background bulk ops (TrashBatch, PermanentDeleteBatch)
-	// use bulkMu + bulkConn so they cannot block interactive ops.
+	// opMu serialises short interactive ops (MarkRead, MarkUnread,
+	// MoveToFolder) so they share one cached IMAP session. The long-running
+	// sync loop has its own dedicated connection and never takes this lock.
 	opMu sync.Mutex
 	// opsConn is a long-lived IMAP session reused across interactive ops.
 	// Reset to nil on any operation error; the next call reconnects.
 	opsConn    *imapclient.Client
 	opFailures int
 
-	// bulkMu serialises background batch operations (TrashBatch,
-	// PermanentDeleteBatch) on a dedicated connection so bulk work cannot
-	// starve interactive ops waiting on opMu.
+	// bulkMu serialises background/batch operations (FetchBody, TrashBatch,
+	// PermanentDeleteBatch) on a dedicated connection so slow bulk work
+	// cannot block interactive ops waiting on opMu.
 	bulkMu       sync.Mutex
 	bulkConn     *imapclient.Client
 	bulkFailures int

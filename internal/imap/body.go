@@ -14,14 +14,13 @@ import (
 	html2text "github.com/k3a/html2text"
 )
 
-// Body / MIME operations on an account. Every method here goes through
-// withOpsConn so a burst of calls shares one cached IMAP session and backs
-// off on sustained failures.
-
 // FetchBody fetches the full body of a message from the server and caches it.
+// Uses the bulk connection so a slow body download (large HTML, many
+// attachments) cannot block MarkRead / MarkUnread which run on the ops
+// connection.
 func (s *Syncer) FetchBody(ctx context.Context, folder string, uid uint32) (string, error) {
 	var text string
-	err := s.withOpsConn(ctx, func(c *imapclient.Client) error {
+	err := s.withBulkConn(ctx, func(c *imapclient.Client) error {
 		if _, err := c.Select(folder, &goimap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 			return fmt.Errorf("select %s: %w", folder, err)
 		}
