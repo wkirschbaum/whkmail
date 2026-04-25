@@ -112,6 +112,7 @@ func (p *fixtureProvider) MarkRead(_ context.Context, folder string, uid uint32)
 }
 
 func (p *fixtureProvider) MarkUnread(_ context.Context, _ string, _ uint32) error { return nil }
+func (p *fixtureProvider) MarkSpam(_ context.Context, _ string, _ uint32) error   { return nil }
 
 func (p *fixtureProvider) MoveToFolder(_ context.Context, _, _ string, _ uint32) error { return nil }
 

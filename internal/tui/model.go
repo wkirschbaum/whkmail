@@ -204,6 +204,11 @@ type (
 		folder  string
 		uid     uint32
 	}
+	msgSpammed struct {
+		account string
+		folder  string
+		uid     uint32
+	}
 	// msgCombinedMessages carries the merged result of parallel per-folder
 	// fetches for the Combined tab. One message arrives when all fetches are
 	// done, so the model never shows a partial combined list.

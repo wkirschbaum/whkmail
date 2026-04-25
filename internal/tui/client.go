@@ -82,6 +82,11 @@ func (c *Client) PermanentDelete(ctx context.Context, account, folder string, ui
 	return c.post(ctx, account, folder, uid, "delete")
 }
 
+// MarkSpam moves a message to the account's Spam/Junk mailbox.
+func (c *Client) MarkSpam(ctx context.Context, account, folder string, uid uint32) error {
+	return c.post(ctx, account, folder, uid, "spam")
+}
+
 // MoveToFolder moves a message from srcFolder to dstFolder. Used for spam
 // marking, archiving, and other single-message moves.
 func (c *Client) MoveToFolder(ctx context.Context, account, srcFolder, dstFolder string, uid uint32) error {

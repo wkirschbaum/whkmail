@@ -277,3 +277,14 @@ func isTrashFolder(name string) bool {
 	}
 	return false
 }
+
+// isSpamFolder matches the common names for an account's spam/junk mailbox
+// so the TUI can suppress spam-marking a message that is already in spam.
+func isSpamFolder(name string) bool {
+	for _, candidate := range types.SpamFolderNames {
+		if name == candidate {
+			return true
+		}
+	}
+	return false
+}

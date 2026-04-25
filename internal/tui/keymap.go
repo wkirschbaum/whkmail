@@ -34,6 +34,7 @@ const (
 	ActHelp
 	ActTabNav
 	ActFolderManager
+	ActMarkSpam
 )
 
 // Key returns the display string for an action under this style. Emacs
@@ -74,6 +75,7 @@ var vimKeys = map[Action]string{
 	ActHelp:          "?",
 	ActTabNav:        "[/]",
 	ActFolderManager: "m",
+	ActMarkSpam:      "S",
 }
 
 // emacsKeys overrides vim bindings for actions that have a distinct
@@ -83,6 +85,7 @@ var vimKeys = map[Action]string{
 var emacsKeys = map[Action]string{
 	ActMove:       "↓/↑",
 	ActMarkRead:   "!",
+	ActMarkSpam:   "$",
 	ActScrollBody: "↓/↑",
 	ActHalfPage:   "PgDn/PgUp",
 	ActTabNav:     "Tab",

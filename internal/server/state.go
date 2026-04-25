@@ -66,6 +66,11 @@ type MailProvider interface {
 	// used by the send handler to refresh exactly the right folder
 	// after a successful submission.
 	ResolveSentFolder(ctx context.Context) (string, error)
+
+	// MarkSpam moves a message from folder into the account's spam/junk
+	// mailbox and removes it from the local cache. Analogous to Trash but
+	// targets the Junk folder.
+	MarkSpam(ctx context.Context, folder string, uid uint32) error
 }
 
 // MailSender is the outbound half — kept as a separate interface from

@@ -53,6 +53,7 @@ type Syncer struct {
 
 	trashCache trashFolderCache
 	sentCache  sentFolderCache
+	spamCache  spamFolderCache
 }
 
 // New constructs a Syncer. The token closure is expected to yield a fresh

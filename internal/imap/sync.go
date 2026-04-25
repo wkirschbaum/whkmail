@@ -88,7 +88,10 @@ func (s *Syncer) run(ctx context.Context) error {
 }
 
 func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
-	data, err := c.List("", "*", nil).Collect()
+	// Request SPECIAL-USE attributes so we can skip virtual aggregate folders
+	// like [Gmail]/All Mail (\All) that contain only duplicates of messages
+	// already synced from their canonical folders.
+	data, err := c.List("", "*", &goimap.ListOptions{ReturnSpecialUse: true}).Collect()
 	if err != nil {
 		return err
 	}
@@ -102,11 +105,27 @@ func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 		if err := s.store.UpsertFolder(ctx, f); err != nil {
 			slog.Warn("upsert folder", "name", f.Name, "err", err)
 		}
+		if skipMailboxSync(*mb) {
+			continue
+		}
 		if err := s.syncMailbox(ctx, c, mb.Mailbox); err != nil {
 			slog.Warn("sync mailbox", "name", mb.Mailbox, "err", err)
 		}
 	}
 	return nil
+}
+
+// skipMailboxSync returns true for virtual aggregate mailboxes that contain
+// only copies of messages already present in other folders. Syncing them
+// wastes IMAP round-trips and inflates the local cache with duplicates.
+// The folder record is still upserted so discovery (spam, trash, sent) works.
+func skipMailboxSync(mb goimap.ListData) bool {
+	for _, attr := range mb.Attrs {
+		if attr == goimap.MailboxAttrAll {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Syncer) syncMailbox(ctx context.Context, c *imapclient.Client, name string) error {

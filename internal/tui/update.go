@@ -181,7 +181,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("save draft: %w", err)
 		}
 
-	case msgTrashed, msgDeleted:
+	case msgTrashed, msgDeleted, msgSpammed:
 		// Server confirmed the mutation — nothing more to do, the
 		// optimistic local update already happened at key-press time. A
 		// typed nil msg would do the same but typed acks are handy for

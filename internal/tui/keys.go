@@ -51,6 +51,8 @@ var keyHandlers = map[string]func(Model) (Model, tea.Cmd){
 	"G":         doBottom,
 	"enter":     doOpen,
 	"d":         doTrash,
+	"S":         doMarkSpam,
+	"$":         doMarkSpam,
 	"N":         doMarkUnread,
 	"s":         doMarkRead,
 	"!":         doMarkRead,
@@ -275,6 +277,24 @@ func doFolderManager(m Model) (Model, tea.Cmd) {
 	}
 	m.modal = folderManagerModal{}
 	return m, nil
+}
+
+// doMarkSpam moves the current message to the spam/junk folder. Works in both
+// the message list and the detail view; no-ops outside the message views or
+// when the message is already in the spam folder.
+func doMarkSpam(m Model) (Model, tea.Cmd) {
+	if m.view != viewMessages && m.view != viewMessage {
+		return m, nil
+	}
+	uid, ok := m.currentMessageUID()
+	if !ok {
+		return m, nil
+	}
+	folder := m.currentMessageFolder()
+	if isSpamFolder(folder) {
+		return m, nil
+	}
+	return m.spamMessage(folder, uid)
 }
 
 func doTrash(m Model) (Model, tea.Cmd) {

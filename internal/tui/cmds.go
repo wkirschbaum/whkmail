@@ -134,6 +134,17 @@ func saveStyleCmd(style InputStyle) tea.Cmd {
 	}
 }
 
+func markSpamCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := requestCtx()
+		defer cancel()
+		if err := c.MarkSpam(ctx, account, folder, uid); err != nil {
+			return msgErr{err}
+		}
+		return msgSpammed{account: account, folder: folder, uid: uid}
+	}
+}
+
 func trashCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := requestCtx()

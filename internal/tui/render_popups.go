@@ -66,6 +66,7 @@ func (m Model) helpSections() []helpSection {
 				{k(ActMarkRead), "mark read"},
 				{k(ActMarkUnread), "mark unread"},
 				{k(ActTrash), "trash"},
+				{k(ActMarkSpam), "mark as spam"},
 			},
 		},
 		{
@@ -77,6 +78,7 @@ func (m Model) helpSections() []helpSection {
 				{k(ActJumpMessage), "next / prev message"},
 				{k(ActMarkUnread), "mark unread (back to list)"},
 				{k(ActTrash), "trash"},
+				{k(ActMarkSpam), "mark as spam"},
 				{"r", "reply all"},
 				{"R", "reply to sender"},
 			},

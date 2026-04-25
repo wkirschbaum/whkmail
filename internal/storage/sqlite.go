@@ -20,18 +20,23 @@ type SQLite struct {
 // Compile-time check that *SQLite satisfies the Store contract.
 var _ Store = (*SQLite)(nil)
 
+// pragmaDSN is appended to every SQLite path so the driver applies these
+// settings on every connection it opens from the pool. WAL mode is a
+// file-level setting (only needs to be set once, but setting it again is
+// harmless); busy_timeout is per-connection and must be in the DSN so new
+// pooled connections inherit it without a separate PRAGMA exec.
+const pragmaDSN = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+
 // OpenSQLite opens (or creates) the SQLite database at path and runs migrations.
 func OpenSQLite(path string) (*SQLite, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path+pragmaDSN)
 	if err != nil {
 		return nil, err
 	}
-	// Serialize all access through one connection to prevent SQLITE_BUSY.
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(context.Background(), `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set pragmas: %w", err)
-	}
+	// WAL mode allows one writer + many concurrent readers. Pool size 4 lets
+	// HTTP handler goroutines read while the sync loop writes without queuing
+	// behind a single connection.
+	db.SetMaxOpenConns(4)
 	s := &SQLite{db: db}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()

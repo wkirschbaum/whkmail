@@ -81,6 +81,15 @@ func (m Model) trashMessage(folder string, uid uint32) (Model, tea.Cmd) {
 	return m, tea.Batch(trashCmd(m.client, account, folder, uid), tea.SetWindowTitle(m.windowTitle()))
 }
 
+// spamMessage runs the optimistic local delete + daemon-side spam move.
+// Pops back to the list if the detail view is open for this message.
+func (m Model) spamMessage(folder string, uid uint32) (Model, tea.Cmd) {
+	account := m.account
+	m.popIfViewing(folder, uid)
+	m.removeLocalMessage(folder, uid)
+	return m, tea.Batch(markSpamCmd(m.client, account, folder, uid), tea.SetWindowTitle(m.windowTitle()))
+}
+
 // permanentDelete is the trash-folder variant — expunges on the server and
 // removes the row locally after confirmation.
 func (m Model) permanentDelete(account, folder string, uid uint32) (Model, tea.Cmd) {

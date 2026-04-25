@@ -26,6 +26,7 @@ func BuildMux(st *State) *http.ServeMux {
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/trash", st.HandleTrash)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/delete", st.HandlePermanentDelete)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/move", st.HandleMove)
+	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/spam", st.HandleMarkSpam)
 	mux.HandleFunc("POST /accounts/{account}/send", st.HandleSend)
 	mux.HandleFunc("DELETE /accounts/{account}", st.HandleRemoveAccount)
 	mux.HandleFunc("GET /events", st.handleSSE)
@@ -176,6 +177,18 @@ func (st *State) HandleMove(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("HandleMove: delete from store", "account", ac.email, "folder", folder, "uid", uid, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleMarkSpam moves a message from its current folder into the account's
+// spam/junk mailbox. Inline (synchronous) rather than queued, since spam
+// marking is infrequent and the spam folder resolution is cheap after the
+// first call. The local cache row is removed by the provider.
+func (st *State) HandleMarkSpam(w http.ResponseWriter, r *http.Request) {
+	st.mutateMessage(w, r, func(ac *accountState, folder string, uid uint32) error {
+		ctx, cancel := context.WithTimeout(r.Context(), OpRequestTimeout)
+		defer cancel()
+		return ac.provider.MarkSpam(ctx, folder, uid)
+	})
 }
 
 // enqueueMutation is the shared plumbing for HandleTrash and
