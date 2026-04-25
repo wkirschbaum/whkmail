@@ -24,7 +24,6 @@ const (
 	ActMarkRead
 	ActMarkUnread
 	ActTrash
-	ActRefresh
 	ActBack
 	ActQuit
 	ActScrollBody
@@ -33,6 +32,8 @@ const (
 	ActTopBottom
 	ActHalfPage
 	ActHelp
+	ActTabNav
+	ActFolderManager
 )
 
 // Key returns the display string for an action under this style. Emacs
@@ -58,20 +59,21 @@ func (s InputStyle) Normalize() InputStyle {
 }
 
 var vimKeys = map[Action]string{
-	ActMove:        "j/k",
-	ActOpen:        "enter",
-	ActMarkRead:    "s",
-	ActMarkUnread:  "N",
-	ActTrash:       "d",
-	ActRefresh:     "r",
-	ActBack:        "esc",
-	ActQuit:        "C-d",
-	ActScrollBody:  "j/k",
-	ActJumpMessage: "n/p",
-	ActConfig:      ",",
-	ActTopBottom:   "g/G",
-	ActHalfPage:    "PgDn/PgUp",
-	ActHelp:        "?",
+	ActMove:          "j/k",
+	ActOpen:          "enter",
+	ActMarkRead:      "s",
+	ActMarkUnread:    "N",
+	ActTrash:         "d",
+	ActBack:          "esc",
+	ActQuit:          "C-d",
+	ActScrollBody:    "j/k",
+	ActJumpMessage:   "n/p",
+	ActConfig:        ",",
+	ActTopBottom:     "g/G",
+	ActHalfPage:      "PgDn/PgUp",
+	ActHelp:          "?",
+	ActTabNav:        "[/]",
+	ActFolderManager: "m",
 }
 
 // emacsKeys overrides vim bindings for actions that have a distinct
@@ -83,4 +85,5 @@ var emacsKeys = map[Action]string{
 	ActMarkRead:   "!",
 	ActScrollBody: "↓/↑",
 	ActHalfPage:   "PgDn/PgUp",
+	ActTabNav:     "Tab",
 }

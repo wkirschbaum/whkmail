@@ -32,7 +32,6 @@ func (m Model) helpSections() []helpSection {
 			entries: []helpEntry{
 				{k(ActHelp), "toggle this help"},
 				{k(ActConfig), "config"},
-				{k(ActRefresh), "refresh"},
 				{k(ActBack), "back / cancel"},
 				{k(ActQuit), "quit (also C-c)"},
 			},
@@ -51,12 +50,15 @@ func (m Model) helpSections() []helpSection {
 			entries: []helpEntry{
 				{k(ActMove), "move up/down"},
 				{k(ActOpen), "open folder"},
+				{k(ActFolderManager), "folder manager (hide/show/combine)"},
 			},
 		},
 		{
 			title:  "Messages (list)",
 			active: m.view == viewMessages,
 			entries: []helpEntry{
+				{k(ActTabNav), "switch tab"},
+				{k(ActFolderManager), "folder manager (hide/show/combine)"},
 				{k(ActMove), "move up/down"},
 				{k(ActTopBottom), "top / bottom"},
 				{k(ActHalfPage), "half page up/down"},

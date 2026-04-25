@@ -73,30 +73,40 @@ type prefetchKey struct {
 	uid     uint32
 }
 
-// NewModel returns a fresh Model. markReadDelay controls how long a message
-// must stay open in the detail view before the daemon is asked to flag it
-// as seen; pass 0 to use types.DefaultMarkReadDelay. style selects the help
+// NewModel returns a fresh Model. ctx governs the background SSE reader — it
+// should be cancelled when the TUI exits. markReadDelay controls how long a
+// message must stay open in the detail view before the daemon is asked to flag
+// it as seen; pass 0 to use types.DefaultMarkReadDelay. style selects the help
 // footer flavour; empty/unrecognised values fall through to vim.
-func NewModel(c *Client, markReadDelay time.Duration, style InputStyle) Model {
+func NewModel(ctx context.Context, c *Client, markReadDelay time.Duration, style InputStyle) Model {
 	if markReadDelay <= 0 {
 		markReadDelay = types.DefaultMarkReadDelay
 	}
 	eventCh := make(chan events.Event, 16)
 	go func() {
 		for {
-			if err := c.StreamEvents(context.Background(), eventCh); err != nil {
+			err := c.StreamEvents(ctx, eventCh)
+			if ctx.Err() != nil {
+				return // context cancelled; clean exit
+			}
+			if err == nil {
+				// Normal EOF — daemon closed the connection. Brief pause before
+				// reconnecting so we don't hot-spin on a stopped daemon.
+				time.Sleep(time.Second)
+			} else {
 				time.Sleep(5 * time.Second)
 			}
 		}
 	}()
 	return Model{
-		client:     c,
-		eventCh:    eventCh,
-		loading:    true,
-		style:      style.Normalize(),
-		mark:       markReadTimer{delay: markReadDelay},
-		prefetched: make(map[prefetchKey]bool),
-		bodyErr:    make(map[prefetchKey]string),
+		client:       c,
+		eventCh:      eventCh,
+		loading:      true,
+		style:        style.Normalize(),
+		mark:         markReadTimer{delay: markReadDelay},
+		prefetched:   make(map[prefetchKey]bool),
+		bodyErr:      make(map[prefetchKey]string),
+		folderStates: LoadFolderStates(),
 	}
 }
 
@@ -120,10 +130,16 @@ type Model struct {
 	modal   modal // nil when no popup is open
 
 	// navigation selection
-	accounts []types.AccountStatus
-	account  string
-	folders  []types.Folder
-	folder   string
+	accounts     []types.AccountStatus
+	account      string
+	folders      []types.Folder
+	folder       string
+	folderStates map[string]FolderState
+
+	// activeTab is the currently selected tab in viewMessages.
+	// 0 = Combined (messages from all FolderStateCombined folders merged),
+	// i > 0 = m.folders[i-1] (one specific folder).
+	activeTab int
 
 	// message-list viewport
 	messages  []types.Message
@@ -188,6 +204,12 @@ type (
 		folder  string
 		uid     uint32
 	}
+	// msgCombinedMessages carries the merged result of parallel per-folder
+	// fetches for the Combined tab. One message arrives when all fetches are
+	// done, so the model never shows a partial combined list.
+	msgCombinedMessages struct {
+		messages []types.Message
+	}
 	tickMarkRead struct {
 		gen     int
 		account string
@@ -210,7 +232,9 @@ func (m Model) Init() tea.Cmd {
 func (m Model) windowTitle() string {
 	var total uint32
 	for _, f := range m.folders {
-		total += f.Unread
+		if folderStateFor(f.Name, m.folderStates) != FolderStateHidden {
+			total += f.Unread
+		}
 	}
 	if total == 0 {
 		return "whkmail"

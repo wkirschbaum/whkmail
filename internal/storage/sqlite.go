@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wkirschbaum/whkmail/internal/types"
@@ -63,14 +64,25 @@ func (s *SQLite) migrate() error {
 	if err != nil {
 		return err
 	}
-	// Idempotent additions for databases created before these columns existed.
-	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE folders ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE folders ADD COLUMN uid_next INTEGER NOT NULL DEFAULT 1`)
-	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN draft INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN body_fetched INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN in_reply_to TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.ExecContext(context.Background(), `ALTER TABLE messages ADD COLUMN answered INTEGER NOT NULL DEFAULT 0`)
+	// Idempotent column additions for databases created before these columns
+	// existed. SQLite returns "duplicate column name" when a column is already
+	// present — that error is expected and safe to ignore; any other error
+	// (disk full, corrupt DB, etc.) is surfaced.
+	for _, stmt := range []string{
+		`ALTER TABLE folders ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE folders ADD COLUMN uid_next INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE messages ADD COLUMN draft INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN body_fetched INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN in_reply_to TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN answered INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := s.db.ExecContext(context.Background(), stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migrate: %w", err)
+			}
+		}
+	}
 	return nil
 }
 

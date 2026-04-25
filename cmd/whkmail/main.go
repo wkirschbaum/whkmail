@@ -49,8 +49,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	client := tui.NewClient()
-	m := tui.NewModel(client, loadMarkReadDelay(), tui.LoadInputStyle())
+	m := tui.NewModel(ctx, client, loadMarkReadDelay(), tui.LoadInputStyle())
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

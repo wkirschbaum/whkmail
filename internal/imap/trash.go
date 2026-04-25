@@ -7,28 +7,32 @@ import (
 
 	goimap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
 // trashFolderCache memoises the account's Trash mailbox name. Discovery uses
 // SPECIAL-USE (RFC 6154) when the server advertises it and falls back to the
-// Gmail / common naming convention otherwise. The result is cached on the
-// Syncer for the lifetime of the process — mailboxes don't change names
-// often and the cost of re-listing on every trash action is not worth it.
+// Gmail / common naming convention otherwise. Only a successful resolution is
+// cached so a transient listing failure is retried on the next call.
 type trashFolderCache struct {
-	once sync.Once
-	name string
-	err  error
+	mu   sync.Mutex
+	name string // empty until successfully resolved
 }
 
 // resolveTrashFolder returns the mailbox to move trashed messages into,
 // using the same logged-in IMAP session as the caller.
 func (s *Syncer) resolveTrashFolder(c *imapclient.Client) (string, error) {
-	s.trashCache.once.Do(func() {
-		name, err := discoverTrashFolder(c)
-		s.trashCache.name = name
-		s.trashCache.err = err
-	})
-	return s.trashCache.name, s.trashCache.err
+	s.trashCache.mu.Lock()
+	defer s.trashCache.mu.Unlock()
+	if s.trashCache.name != "" {
+		return s.trashCache.name, nil
+	}
+	name, err := discoverTrashFolder(c)
+	if err != nil {
+		return "", err
+	}
+	s.trashCache.name = name
+	return name, nil
 }
 
 // discoverTrashFolder walks the mailbox list looking for \Trash via
@@ -48,7 +52,7 @@ func discoverTrashFolder(c *imapclient.Client) (string, error) {
 		}
 	}
 	// Fallback: literal names we've seen in the wild.
-	for _, candidate := range []string{"[Gmail]/Trash", "Trash", "Deleted Items", "Deleted Messages"} {
+	for _, candidate := range types.TrashFolderNames {
 		for _, mb := range data {
 			if mb.Mailbox == candidate {
 				return mb.Mailbox, nil

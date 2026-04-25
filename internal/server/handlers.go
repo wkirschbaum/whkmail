@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/wkirschbaum/whkmail/internal/smtp"
 	"github.com/wkirschbaum/whkmail/internal/types"
@@ -188,12 +189,13 @@ func (st *State) HandleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no sender configured", http.StatusServiceUnavailable)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var req types.SendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), BodyFetchTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), SendTimeout)
 	defer cancel()
 	msg := smtp.Message{
 		From:       ac.email,
@@ -223,7 +225,13 @@ func (st *State) resyncAfterSend(ac *accountState, sourceFolder string) {
 	if ac.provider == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), BodyFetchTimeout)
+	// Derive from serverCtx so an in-progress resync is cancelled on daemon
+	// shutdown rather than running for up to SendTimeout after the signal.
+	parent := st.serverCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, SendTimeout)
 	defer cancel()
 
 	if sourceFolder != "" {
@@ -253,7 +261,10 @@ func (st *State) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSSE streams events to the TUI as newline-delimited JSON.
+// handleSSE streams events to the TUI as newline-delimited JSON over an
+// SSE connection. It flushes headers immediately so clients see the stream
+// open before the first event, and sends periodic keepalive pings so
+// intermediate proxies don't drop idle connections.
 func (st *State) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -265,22 +276,42 @@ func (st *State) handleSSE(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	enc := json.NewEncoder(w)
 
+	// Flush headers immediately so the client knows the stream is live
+	// before the first event arrives.
+	if err := rc.Flush(); err != nil {
+		return
+	}
+
+	keepalive := time.NewTicker(sseKeepaliveInterval)
+	defer keepalive.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-keepalive.C:
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			if err := rc.Flush(); err != nil {
+				return
+			}
 		case e, ok := <-ch:
 			if !ok {
 				return
 			}
-			//nolint:errcheck
-			fmt.Fprint(w, "data: ")
-			//nolint:errcheck
-			enc.Encode(e)
-			//nolint:errcheck
-			fmt.Fprint(w, "\n")
-			//nolint:errcheck
-			rc.Flush()
+			if _, err := fmt.Fprint(w, "data: "); err != nil {
+				return
+			}
+			if err := enc.Encode(e); err != nil {
+				return
+			}
+			if _, err := fmt.Fprint(w, "\n"); err != nil {
+				return
+			}
+			if err := rc.Flush(); err != nil {
+				return
+			}
 		}
 	}
 }

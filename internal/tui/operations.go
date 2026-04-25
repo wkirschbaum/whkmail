@@ -7,40 +7,48 @@ import (
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
-// openMessage transitions to viewMessage for the given UID and schedules the
-// mark-as-read tick. It reads the body from the local cache when available so
-// re-opening a previously read message is instant. Prefetches the next two
+// openMessage transitions to viewMessage for the given message and schedules
+// the mark-as-read tick. It reads the body from the local cache when available
+// so re-opening a previously read message is instant. Prefetches the next two
 // messages after the cursor to warm the cache for likely-next navigation.
-func (m Model) openMessage(uid uint32) (Model, tea.Cmd) {
+// Takes a full Message so the folder is always correct, including in the
+// Combined tab where m.folder is empty.
+func (m Model) openMessage(msg types.Message) (Model, tea.Cmd) {
 	m.view = viewMessage
 	m.bodyTop = 0
 	m.mark.gen++
 	gen := m.mark.gen
 
-	// Seed m.message from the list so the header area renders immediately.
-	// The body will either be present (cached) or filled in when the fetch
-	// returns.
-	idx := messageIndex(m.messages, m.folder, uid)
-	var cached types.Message
-	if idx >= 0 {
-		cached = m.messages[idx]
-	} else {
-		cached = types.Message{UID: uid, Folder: m.folder}
-	}
-	cp := cached
+	cp := msg
 	m.message = &cp
 
 	cmds := []tea.Cmd{
 		tea.Tick(m.mark.delay, func(time.Time) tea.Msg {
-			return tickMarkRead{gen: gen, account: m.account, folder: m.folder, uid: uid}
+			return tickMarkRead{gen: gen, account: m.account, folder: msg.Folder, uid: msg.UID}
 		}),
 	}
-	// Only fetch the body across the wire when the daemon hasn't fetched it yet.
-	if !cached.BodyFetched {
-		cmds = append(cmds, fetchMessage(m.client, m.account, m.folder, uid))
+	if !msg.BodyFetched {
+		cmds = append(cmds, fetchMessage(m.client, m.account, msg.Folder, msg.UID))
 	}
 	cmds = append(cmds, m.prefetchAfter(m.cursor+1, 2)...)
 	return m, tea.Batch(cmds...)
+}
+
+// currentMessageFolder returns the folder of the currently focused message.
+// In the Combined tab (m.folder = "") the folder is read from the message
+// itself, so operations always target the right mailbox.
+func (m Model) currentMessageFolder() string {
+	switch m.view {
+	case viewMessages:
+		if m.cursor >= 0 && m.cursor < len(m.messages) {
+			return m.messages[m.cursor].Folder
+		}
+	case viewMessage:
+		if m.message != nil {
+			return m.message.Folder
+		}
+	}
+	return m.folder
 }
 
 // currentMessageUID returns the UID of the message the user is currently
@@ -64,9 +72,10 @@ func (m Model) currentMessageUID() (uint32, bool) {
 
 // trashMessage runs the optimistic local delete + daemon-side trash. If the
 // message was open in the detail view, we pop back to the list so the user
-// doesn't stare at a now-removed message.
-func (m Model) trashMessage(uid uint32) (Model, tea.Cmd) {
-	account, folder := m.account, m.folder
+// doesn't stare at a now-removed message. folder must be the message's own
+// folder (not m.folder, which is empty in the Combined tab).
+func (m Model) trashMessage(folder string, uid uint32) (Model, tea.Cmd) {
+	account := m.account
 	m.popIfViewing(folder, uid)
 	m.removeLocalMessage(folder, uid)
 	return m, tea.Batch(trashCmd(m.client, account, folder, uid), tea.SetWindowTitle(m.windowTitle()))

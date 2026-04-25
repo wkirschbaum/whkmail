@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
 // modal is a uniform shape for every popup the TUI can raise. When
@@ -133,4 +137,117 @@ func styleIndex(style InputStyle) int {
 		}
 	}
 	return 0
+}
+
+// folderManagerModal is the full-screen folder manager overlay. It shows all
+// folders grouped by state — combined and normal at the top, hidden at the
+// bottom — and lets the user cycle states with Space.
+type folderManagerModal struct {
+	cursor int
+}
+
+func (folderManagerModal) overlay() bool { return true }
+
+func (p folderManagerModal) handleKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
+	sorted := sortedFolders(m.folders, m.folderStates)
+	switch msg.String() {
+	case "j", "down", "ctrl+n":
+		p.cursor = clamp(p.cursor+1, len(sorted)-1)
+		m.modal = p
+	case "k", "up", "ctrl+p":
+		p.cursor = clamp(p.cursor-1, len(sorted)-1)
+		m.modal = p
+	case " ":
+		if p.cursor < len(sorted) {
+			folder := sorted[p.cursor].Name
+			next := cycleState(folderStateFor(folder, m.folderStates))
+			m.folderStates[folder] = next
+			// Keep cursor tracking the same folder in the re-sorted list.
+			newSorted := sortedFolders(m.folders, m.folderStates)
+			for i, f := range newSorted {
+				if f.Name == folder {
+					p.cursor = i
+					break
+				}
+			}
+			m.modal = p
+			return m, saveFolderStateCmd(folder, next)
+		}
+	case "esc", "backspace":
+		m.modal = nil
+		// Clamp the folder-list cursor in case hidden folders were added.
+		if m.view == viewFolders {
+			m.cursor = clamp(m.cursor, len(m.visibleFolders())-1)
+		}
+	}
+	return m, nil
+}
+
+func (p folderManagerModal) render(m Model) string {
+	sorted := sortedFolders(m.folders, m.folderStates)
+
+	var b strings.Builder
+	b.WriteString(styleHeader.Render("Folder Manager") + "\n\n")
+
+	hiddenHeaderShown := false
+	for i, f := range sorted {
+		state := folderStateFor(f.Name, m.folderStates)
+
+		if !hiddenHeaderShown && state == FolderStateHidden {
+			b.WriteString("\n" + styleDim.Render("── hidden ──") + "\n")
+			hiddenHeaderShown = true
+		}
+
+		var stateTag string
+		switch state {
+		case FolderStateCombined:
+			stateTag = "◉ combined"
+		case FolderStateNormal:
+			stateTag = "○ normal  "
+		case FolderStateHidden:
+			stateTag = ""
+		}
+
+		name := truncate(f.Name, 30)
+		var line string
+		if state != FolderStateHidden && f.Unread > 0 {
+			line = fmt.Sprintf("%-30s  %s  %d", name, stateTag, f.Unread)
+		} else {
+			line = fmt.Sprintf("%-30s  %s", name, stateTag)
+		}
+
+		switch {
+		case i == p.cursor:
+			b.WriteString(styleSelected.Render("> " + line) + "\n")
+		case state == FolderStateHidden:
+			b.WriteString(styleDim.Render("  " + line) + "\n")
+		default:
+			b.WriteString("  " + line + "\n")
+		}
+	}
+
+	b.WriteString("\n" + styleDim.Render("space: combined → normal → hidden   j/k: move   esc: close"))
+	return b.String()
+}
+
+// sortedFolders returns folders in display order for the folder manager:
+// combined first, then normal, then hidden — preserving server order within
+// each group.
+func sortedFolders(folders []types.Folder, states map[string]FolderState) []types.Folder {
+	var combined, normal, hidden []types.Folder
+	for _, f := range folders {
+		switch folderStateFor(f.Name, states) {
+		case FolderStateCombined:
+			combined = append(combined, f)
+		case FolderStateNormal:
+			normal = append(normal, f)
+		default:
+			hidden = append(hidden, f)
+		}
+	}
+	out := make([]types.Folder, 0, len(folders))
+	out = append(out, combined...)
+	out = append(out, normal...)
+	out = append(out, hidden...)
+	return out
 }

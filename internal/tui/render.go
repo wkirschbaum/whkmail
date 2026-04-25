@@ -11,8 +11,8 @@ import (
 // frame() so the status bar lands on the last row.
 func (m Model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("error: %v\n\nPress %s to retry or %s to quit.",
-			m.err, m.style.Key(ActRefresh), m.style.Key(ActQuit))
+		return fmt.Sprintf("error: %v\n\nPress any key to retry, or %s to quit.",
+			m.err, m.style.Key(ActQuit))
 	}
 	// Overlay modals (help, style picker) replace the whole view so the
 	// user's eye is undistracted. Inline modals (confirm) flow through
@@ -105,7 +105,8 @@ func (m Model) renderFolders() string {
 		b.WriteString(styleMuted.Render(" (refreshing…)"))
 	}
 	b.WriteString("\n\n")
-	for i, f := range m.folders {
+	visible := m.visibleFolders()
+	for i, f := range visible {
 		line := fmt.Sprintf("%-30s %d", f.Name, f.Unread)
 		switch {
 		case i == m.cursor:
@@ -116,34 +117,25 @@ func (m Model) renderFolders() string {
 			b.WriteString(styleDim.Render("  "+line) + "\n")
 		}
 	}
-	if len(m.folders) == 0 {
+	if len(visible) == 0 {
 		b.WriteString(styleDim.Render("  No folders yet. Daemon may still be syncing.") + "\n")
 	}
 	return b.String()
 }
 
+// folderBadgeCols is the fixed column width of the folder badge shown in the
+// Combined tab. A space separator follows, so the total overhead per row is
+// folderBadgeCols+1 characters.
+const folderBadgeCols = 9
+
 func (m Model) renderMessages() string {
 	var b strings.Builder
-	if m.account != "" {
-		b.WriteString(styleDim.Render(m.account+" / "+m.folder) + "\n")
-	}
-
-	title := styleHeader.Render("Messages")
-	counter := ""
-	if n := len(m.messages); n > 0 {
-		counter = fmt.Sprintf("  %d/%d", m.cursor+1, n)
-	}
-	b.WriteString(title)
-	if counter != "" {
-		b.WriteString(styleDim.Render(counter))
-	}
-	if m.loading {
-		b.WriteString(styleMuted.Render(" (refreshing…)"))
-	}
-	b.WriteString("\n")
+	b.WriteString(m.renderTabBar())
 
 	if len(m.messages) == 0 {
-		b.WriteString(styleDim.Render("  No messages.") + "\n")
+		if !m.loading {
+			b.WriteString(styleDim.Render("  No messages.") + "\n")
+		}
 		return b.String()
 	}
 
@@ -157,18 +149,93 @@ func (m Model) renderMessages() string {
 	if rowWidth <= 0 {
 		rowWidth = 80
 	}
+
+	combined := m.activeTab == 0
 	for i := top; i < end; i++ {
 		msg := m.messages[i]
 		prefix := threadIndent(m.msgDepths, i)
-		row := formatMessageRow(msg, rowWidth-2-len([]rune(prefix)))
+		badge := ""
+		if combined {
+			label := truncate(msg.Folder, folderBadgeCols)
+			badge = label + strings.Repeat(" ", folderBadgeCols-len([]rune(label))) + " "
+		}
+		avail := rowWidth - 2 - len([]rune(prefix)) - len([]rune(badge))
+		row := formatMessageRow(msg, avail)
 		if i == m.cursor {
-			b.WriteString(styleSelected.Render(padRight("> "+prefix+row, rowWidth)))
+			b.WriteString(styleSelected.Render(padRight("> "+badge+prefix+row, rowWidth)))
 		} else {
-			b.WriteString(messageStyle(msg).Render("  " + prefix + row))
+			b.WriteString(messageStyle(msg).Render("  " + badge + prefix + row))
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// tabName returns the display label for tab i.
+// Tab 0 is always "Combined"; tabs 1..n are truncated folder names.
+func (m Model) tabName(i int) string {
+	if i == 0 {
+		return "Combined"
+	}
+	return truncate(m.folders[i-1].Name, 10)
+}
+
+// renderTabBar renders the three-line classic tab bar:
+//
+//	      ┌──────────┐
+//	  Foo │ Combined │  Bar   Baz
+//	──────┘          └─────────────
+func (m Model) renderTabBar() string {
+	tabs := m.visibleTabIndices()
+
+	activePos := 0
+	for i, t := range tabs {
+		if t == m.activeTab {
+			activePos = i
+			break
+		}
+	}
+
+	activeLabel := m.tabName(m.activeTab)
+	innerWidth := 1 + len([]rune(activeLabel)) + 1 // space + label + space
+
+	// Visual width of inactive tabs to the left of the active tab.
+	leftOffset := 0
+	for i := 0; i < activePos; i++ {
+		leftOffset += 2 + len([]rune(m.tabName(tabs[i]))) // "  label"
+	}
+
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+
+	// Line 1: top border positioned over the active tab.
+	line1 := strings.Repeat(" ", leftOffset) + "┌" + strings.Repeat("─", innerWidth) + "┐"
+
+	// Line 2: inactive tabs (dim) interleaved with the active tab box.
+	var b2 strings.Builder
+	for _, t := range tabs {
+		label := m.tabName(t)
+		if t == m.activeTab {
+			b2.WriteString("│ " + label + " │")
+		} else {
+			b2.WriteString(styleDim.Render("  " + label))
+		}
+	}
+	if m.loading {
+		b2.WriteString(styleMuted.Render(" (refreshing…)"))
+	}
+
+	// Line 3: full-width separator with gap beneath the active tab.
+	activeBoxWidth := innerWidth + 2
+	remaining := width - leftOffset - activeBoxWidth
+	if remaining < 0 {
+		remaining = 0
+	}
+	line3 := strings.Repeat("─", leftOffset) + "┘" + strings.Repeat(" ", innerWidth) + "└" + strings.Repeat("─", remaining)
+
+	return line1 + "\n" + b2.String() + "\n" + line3 + "\n"
 }
 
 func (m Model) renderMessage() string {

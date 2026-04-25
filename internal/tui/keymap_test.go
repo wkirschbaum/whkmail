@@ -27,7 +27,6 @@ func TestInputStyle_Key_Vim(t *testing.T) {
 		ActConfig:      ",",
 		ActOpen:        "enter",
 		ActTrash:       "d",
-		ActRefresh:     "r",
 		ActBack:        "esc",
 		ActQuit:        "C-d",
 	}
@@ -56,7 +55,7 @@ func TestInputStyle_Key_Emacs(t *testing.T) {
 	// display. ActMarkUnread used to be `?` but `?` is now reserved for
 	// the help overlay, so emacs users see the shared `N` binding.
 	shared := []Action{
-		ActOpen, ActTrash, ActRefresh, ActBack, ActQuit, ActConfig,
+		ActOpen, ActTrash, ActBack, ActQuit, ActConfig,
 		ActJumpMessage, ActMarkUnread, ActHelp,
 	}
 	for _, action := range shared {

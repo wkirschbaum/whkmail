@@ -12,6 +12,11 @@ import (
 	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
+// mutationQueueDepth caps the pending-mutation queues. 256 UIDs is enough for
+// a vigorous bulk-delete session while still providing backpressure to the TUI
+// if the IMAP connection is struggling.
+const mutationQueueDepth = 256
+
 // MailStore is the persistence interface required by the HTTP handlers.
 type MailStore interface {
 	ListFolders(ctx context.Context) ([]types.Folder, error)
@@ -102,6 +107,10 @@ type State struct {
 	jobs        chan job
 	trashJobs   chan bgJob
 	deleteJobs  chan bgJob
+	// serverCtx is the top-level context passed to Serve. It is set once
+	// before the server starts accepting connections and is safe to read
+	// from handler goroutines without further synchronisation.
+	serverCtx context.Context
 }
 
 // AccountOption customises an account registration. See WithCancel and
@@ -126,8 +135,8 @@ func NewState(bus *events.Bus) *State {
 		accounts:   make(map[string]*accountState),
 		bus:        bus,
 		jobs:       make(chan job, 64),
-		trashJobs:  make(chan bgJob, 4096),
-		deleteJobs: make(chan bgJob, 4096),
+		trashJobs:  make(chan bgJob, mutationQueueDepth),
+		deleteJobs: make(chan bgJob, mutationQueueDepth),
 	}
 }
 

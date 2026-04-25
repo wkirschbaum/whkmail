@@ -2,9 +2,12 @@ package tui
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
 // tea.Cmd factories. One per daemon endpoint. The shared shape is: build a
@@ -130,5 +133,50 @@ func permanentDeleteCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 			return msgErr{err}
 		}
 		return msgDeleted{account: account, folder: folder, uid: uid}
+	}
+}
+
+// fetchCombinedMessages fetches all listed folders in parallel and delivers
+// a single msgCombinedMessages when every fetch has settled. Errors on
+// individual folders are silently skipped so one slow/broken folder
+// doesn't block the combined view.
+func fetchCombinedMessages(c *Client, account string, folders []string) tea.Cmd {
+	if len(folders) == 0 {
+		return func() tea.Msg { return msgCombinedMessages{} }
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		var (
+			mu  sync.Mutex
+			all []types.Message
+			wg  sync.WaitGroup
+		)
+		for _, f := range folders {
+			wg.Add(1)
+			go func(folder string) {
+				defer wg.Done()
+				r, err := c.Messages(ctx, account, folder)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				all = append(all, r.Messages...)
+				mu.Unlock()
+			}(f)
+		}
+		wg.Wait()
+		return msgCombinedMessages{messages: all}
+	}
+}
+
+// saveFolderStateCmd persists one folder's display state. Errors surface via
+// the normal msgErr path so a disk failure shows in the error banner.
+func saveFolderStateCmd(folder string, state FolderState) tea.Cmd {
+	return func() tea.Msg {
+		if err := saveFolderState(folder, state); err != nil {
+			return msgErr{err}
+		}
+		return nil
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
@@ -71,11 +72,11 @@ func (s *Sender) Send(ctx context.Context, msg Message) error {
 		return fmt.Errorf("auth: %w", err)
 	}
 
-	if err := c.Mail(stripAngleBrackets(msg.From)); err != nil {
+	if err := c.Mail(bareAddress(msg.From)); err != nil {
 		return fmt.Errorf("MAIL FROM: %w", err)
 	}
 	for _, rcpt := range msg.Recipients() {
-		if err := c.Rcpt(stripAngleBrackets(rcpt)); err != nil {
+		if err := c.Rcpt(bareAddress(rcpt)); err != nil {
 			return fmt.Errorf("RCPT TO %s: %w", rcpt, err)
 		}
 	}
@@ -95,15 +96,15 @@ func (s *Sender) Send(ctx context.Context, msg Message) error {
 	return c.Quit()
 }
 
-// stripAngleBrackets pulls the bare address out of a "Name <addr@ex>"
-// or "<addr@ex>" form. Gmail's SMTP submission expects just the address
-// portion on MAIL FROM / RCPT TO lines.
-func stripAngleBrackets(addr string) string {
-	if i := strings.LastIndex(addr, "<"); i >= 0 {
-		if j := strings.LastIndex(addr, ">"); j > i {
-			return addr[i+1 : j]
-		}
+// bareAddress extracts the RFC 5322 addr-spec from a full address string.
+// Handles "Name <addr@ex>", "<addr@ex>", and plain "addr@ex" forms.
+// Gmail's SMTP submission expects just the address portion on MAIL FROM /
+// RCPT TO lines.
+func bareAddress(addr string) string {
+	if parsed, err := mail.ParseAddress(addr); err == nil {
+		return parsed.Address
 	}
+	// Fall back to trimming whitespace for addresses that are already bare.
 	return strings.TrimSpace(addr)
 }
 

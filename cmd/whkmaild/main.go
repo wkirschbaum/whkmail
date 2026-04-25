@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/wkirschbaum/whkmail/internal/dirs"
@@ -55,7 +56,9 @@ func main() {
 		slog.Error("acquire lock", "err", err)
 		os.Exit(1)
 	}
-	defer func() { _ = lockF.Close() }()
+	if lockF != nil {
+		defer func() { _ = lockF.Close() }()
+	}
 
 	bus := events.NewBus()
 
@@ -74,6 +77,14 @@ func main() {
 
 	st := server.NewState(bus)
 
+	// dbs collects open stores so they can be closed after all syncers have
+	// stopped. Closing them inside the loop with defer would race: defers run
+	// when main returns, but syncer goroutines might still be writing to the DB.
+	var (
+		dbs       []*storage.SQLite
+		syncerWG  sync.WaitGroup
+	)
+
 	for _, acc := range accounts {
 		accountDir := dirs.AccountStateDir(acc.config.Email)
 		if err := os.MkdirAll(accountDir, 0o700); err != nil {
@@ -86,11 +97,7 @@ func main() {
 			slog.Error("open db", "account", acc.config.Email, "err", err)
 			os.Exit(1)
 		}
-		defer func() {
-			if err := db.Close(); err != nil {
-				slog.Warn("close db", "err", err)
-			}
-		}()
+		dbs = append(dbs, db)
 
 		syncer := imap.New(acc.config.IMAPHost, acc.config.IMAPPort, acc.config.Email, acc.tokenFn, db, bus)
 		sender := smtp.New(gmailSMTPHost, gmailSMTPPort, acc.config.Email, acc.tokenFn)
@@ -99,11 +106,23 @@ func main() {
 			server.WithCancel(accCancel),
 			server.WithSender(sender),
 		)
-		go syncer.Run(accCtx)
+		syncerWG.Add(1)
+		go func() {
+			defer syncerWG.Done()
+			syncer.Run(accCtx)
+		}()
 	}
 
 	if err := server.Serve(ctx, st); err != nil {
 		slog.Error("server", "err", err)
 		os.Exit(1)
+	}
+
+	// Wait for all syncer goroutines to drain before closing their databases.
+	syncerWG.Wait()
+	for _, db := range dbs {
+		if err := db.Close(); err != nil {
+			slog.Warn("close db", "err", err)
+		}
 	}
 }

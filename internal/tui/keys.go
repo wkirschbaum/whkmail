@@ -60,6 +60,11 @@ var keyHandlers = map[string]func(Model) (Model, tea.Cmd){
 	"?":         doOpenHelp,
 	"esc":       doBack,
 	"backspace": doBack,
+	"[":         doTabLeft,
+	"]":         doTabRight,
+	"tab":       doTabRight,
+	"shift+tab": doTabLeft,
+	"m":         doFolderManager,
 }
 
 func doQuit(m Model) (Model, tea.Cmd) { return m, tea.Quit }
@@ -86,7 +91,7 @@ func (m Model) openReply(all bool) (Model, tea.Cmd) {
 	if m.view != viewMessage || m.message == nil {
 		return m, nil
 	}
-	cs := newComposeState(*m.message, m.account, all, m.folder)
+	cs := newComposeState(*m.message, m.account, all, m.message.Folder)
 	cs.resize(m.width-4, composePaneRows(m.height))
 	m.compose = &cs
 	return m, nil
@@ -174,14 +179,22 @@ func doOpen(m Model) (Model, tea.Cmd) {
 		m.folders = m.accounts[m.cursor].Folders
 		m.cursor = 0
 		m.view = viewFolders
-		// New account → old folder state is meaningless; drop it.
 		m.folder = ""
 		m.messages = nil
 	case viewFolders:
-		if len(m.folders) == 0 {
+		visible := m.visibleFolders()
+		if len(visible) == 0 {
 			return m, nil
 		}
-		m.folder = m.folders[m.cursor].Name
+		chosen := visible[m.cursor]
+		m.folder = chosen.Name
+		// Set activeTab to the chosen folder's index in m.folders (+1 for Combined offset).
+		for i, f := range m.folders {
+			if f.Name == chosen.Name {
+				m.activeTab = i + 1
+				break
+			}
+		}
 		m.view = viewMessages
 		m.cursor = 0
 		m.msgTop = 0
@@ -192,8 +205,75 @@ func doOpen(m Model) (Model, tea.Cmd) {
 		if len(m.messages) == 0 {
 			return m, nil
 		}
-		return m.openMessage(m.messages[m.cursor].UID)
+		return m.openMessage(m.messages[m.cursor])
 	}
+	return m, nil
+}
+
+func doTabLeft(m Model) (Model, tea.Cmd) {
+	if m.view != viewMessages {
+		return m, nil
+	}
+	tabs := m.visibleTabIndices()
+	if len(tabs) == 0 {
+		return m, nil
+	}
+	pos := 0
+	for i, t := range tabs {
+		if t == m.activeTab {
+			pos = i
+			break
+		}
+	}
+	pos = (pos - 1 + len(tabs)) % len(tabs)
+	m.activeTab = tabs[pos]
+	return m.switchTab()
+}
+
+func doTabRight(m Model) (Model, tea.Cmd) {
+	if m.view != viewMessages {
+		return m, nil
+	}
+	tabs := m.visibleTabIndices()
+	if len(tabs) == 0 {
+		return m, nil
+	}
+	pos := 0
+	for i, t := range tabs {
+		if t == m.activeTab {
+			pos = i
+			break
+		}
+	}
+	pos = (pos + 1) % len(tabs)
+	m.activeTab = tabs[pos]
+	return m.switchTab()
+}
+
+// switchTab resets message state and fetches content for the newly active tab.
+func (m Model) switchTab() (Model, tea.Cmd) {
+	m.cursor = 0
+	m.msgTop = 0
+	m.messages = nil
+	m.loading = true
+	if m.activeTab == 0 {
+		m.folder = ""
+		combined := m.combinedFolderNames()
+		if len(combined) == 0 {
+			m.loading = false
+			return m, nil
+		}
+		return m, fetchCombinedMessages(m.client, m.account, combined)
+	}
+	m.folder = m.folders[m.activeTab-1].Name
+	return m, fetchMessages(m.client, m.account, m.folder)
+}
+
+func doFolderManager(m Model) (Model, tea.Cmd) {
+	if m.view != viewFolders && m.view != viewMessages {
+		return m, nil
+	}
+	m.modal = folderManagerModal{}
 	return m, nil
 }
 
@@ -202,8 +282,9 @@ func doTrash(m Model) (Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	if isTrashFolder(m.folder) {
-		folder, account := m.folder, m.account
+	folder := m.currentMessageFolder()
+	if isTrashFolder(folder) {
+		account := m.account
 		m.modal = confirmModal{
 			prompt: "Permanently delete this message? (y/N)",
 			onConfirm: func(m Model) (Model, tea.Cmd) {
@@ -212,7 +293,7 @@ func doTrash(m Model) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	return m.trashMessage(uid)
+	return m.trashMessage(folder, uid)
 }
 
 // doMarkUnread marks the current message unread. From the detail view it
@@ -226,7 +307,8 @@ func doMarkUnread(m Model) (Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	account, folder := m.account, m.folder
+	account := m.account
+	folder := m.currentMessageFolder()
 	if m.view == viewMessage {
 		m.view = viewMessages
 		m.message = nil
@@ -245,7 +327,7 @@ func doMarkRead(m Model) (Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	return m, markReadCmd(m.client, m.account, m.folder, uid)
+	return m, markReadCmd(m.client, m.account, m.currentMessageFolder(), uid)
 }
 
 func doOpenStylePicker(m Model) (Model, tea.Cmd) {
@@ -260,15 +342,24 @@ func doOpenHelp(m Model) (Model, tea.Cmd) {
 func doBack(m Model) (Model, tea.Cmd) {
 	switch m.view {
 	case viewAccounts:
-		// Already at the top of the nav stack — nothing to do.
+		// Return to the combined messages view rather than a dead end.
+		m.view = viewMessages
 	case viewFolders:
 		if len(m.accounts) > 1 {
 			m.view = viewAccounts
 			m.cursor = 0
+		} else {
+			// Single-account: fold list is a sidebar, not the home screen.
+			m.view = viewMessages
 		}
 	case viewMessages:
-		m.view = viewFolders
-		m.cursor = 0
+		if len(m.accounts) > 1 {
+			m.view = viewAccounts
+			m.cursor = 0
+		} else {
+			m.view = viewFolders
+			m.cursor = 0
+		}
 	case viewMessage:
 		m.view = viewMessages
 		m.message = nil
@@ -299,7 +390,7 @@ func (m Model) jumpMessage(delta int) (Model, tea.Cmd) {
 	}
 	m.cursor = next
 	m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
-	return m.openMessage(m.messages[m.cursor].UID)
+	return m.openMessage(m.messages[m.cursor])
 }
 
 // moveCursor shifts the selection by delta (-1 or +1) in whatever list
@@ -309,7 +400,7 @@ func (m Model) moveCursor(delta int) (Model, tea.Cmd) {
 	case viewAccounts:
 		m.cursor = clamp(m.cursor+delta, len(m.accounts)-1)
 	case viewFolders:
-		m.cursor = clamp(m.cursor+delta, len(m.folders)-1)
+		m.cursor = clamp(m.cursor+delta, len(m.visibleFolders())-1)
 	case viewMessages:
 		m.cursor = clamp(m.cursor+delta, len(m.messages)-1)
 		m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
@@ -336,7 +427,7 @@ func listLen(m Model) int {
 	case viewAccounts:
 		return len(m.accounts)
 	case viewFolders:
-		return len(m.folders)
+		return len(m.visibleFolders())
 	case viewMessages, viewMessage:
 		return len(m.messages)
 	}

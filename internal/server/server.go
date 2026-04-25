@@ -36,14 +36,32 @@ const (
 	// MIME parts liberally.
 	BodyFetchTimeout = 60 * time.Second
 
+	// SendTimeout bounds SMTP submission and the post-send folder re-sync.
+	// Must exceed the TUI's per-send context (90s) so we never surface a
+	// deadline-exceeded from the daemon side before the TUI times out.
+	SendTimeout = 120 * time.Second
+
 	// ShutdownGrace is how long Serve waits for in-flight HTTP handlers
 	// to finish when ctx is cancelled before it force-closes.
 	ShutdownGrace = 5 * time.Second
+
+	// sseKeepaliveInterval is how often handleSSE sends a comment ping so
+	// proxies don't close idle SSE connections before the next real event.
+	sseKeepaliveInterval = 20 * time.Second
+
+	// maxRequestBodySize caps the body of mutating requests. Protects the
+	// daemon from an accidental or malicious giant payload over the Unix
+	// socket.
+	maxRequestBodySize = 1 << 20 // 1 MiB
 )
 
 // Serve binds the Unix socket, starts the background goroutines, and blocks
 // until ctx is cancelled.
 func Serve(ctx context.Context, st *State) error {
+	// Store ctx before accepting connections so handler goroutines can read
+	// it without synchronisation (they are all started after this point).
+	st.serverCtx = ctx
+
 	go st.trackSyncState(ctx)
 	go st.Worker(ctx)
 	go st.TrashWorker(ctx)
@@ -67,7 +85,10 @@ func Serve(ctx context.Context, st *State) error {
 
 	slog.Info("daemon listening", "socket", sockPath)
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: OpRequestTimeout,
+	}
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), ShutdownGrace)

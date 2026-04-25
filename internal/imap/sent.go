@@ -11,30 +11,38 @@ import (
 )
 
 // sentFolderCache memoises the account's Sent mailbox name the same way
-// trashFolderCache does for Trash. Uses the SPECIAL-USE attribute when
-// the server advertises it, falling back to common literal names.
+// trashFolderCache does for Trash. Only a successful resolution is cached;
+// transient listing failures are retried on the next call.
 type sentFolderCache struct {
-	once sync.Once
-	name string
-	err  error
+	mu   sync.Mutex
+	name string // empty until successfully resolved
 }
 
 // ResolveSentFolder returns the mailbox that archived-sent mail lives in
-// for this account. Result is cached for the life of the Syncer — the
-// mapping is a server-side convention that doesn't change. Exported so
-// the daemon's send handler can trigger a post-send re-sync of exactly
-// the right folder.
+// for this account. Exported so the daemon's send handler can trigger a
+// post-send re-sync of exactly the right folder.
 func (s *Syncer) ResolveSentFolder(ctx context.Context) (string, error) {
+	s.sentCache.mu.Lock()
+	if s.sentCache.name != "" {
+		name := s.sentCache.name
+		s.sentCache.mu.Unlock()
+		return name, nil
+	}
+	s.sentCache.mu.Unlock()
+
+	var name string
 	err := s.withOpsConn(ctx, func(c *imapclient.Client) error {
-		s.sentCache.once.Do(func() {
-			s.sentCache.name, s.sentCache.err = discoverSentFolder(c)
-		})
-		return s.sentCache.err
+		var err error
+		name, err = discoverSentFolder(c)
+		return err
 	})
 	if err != nil {
 		return "", err
 	}
-	return s.sentCache.name, nil
+	s.sentCache.mu.Lock()
+	s.sentCache.name = name
+	s.sentCache.mu.Unlock()
+	return name, nil
 }
 
 // discoverSentFolder walks the mailbox list looking for \Sent via

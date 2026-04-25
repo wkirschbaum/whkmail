@@ -6,6 +6,11 @@ import "time"
 // flag an opened message as seen.
 const DefaultMarkReadDelay = 2 * time.Second
 
+// TrashFolderNames is the ordered list of literal mailbox names used as the
+// Trash folder when SPECIAL-USE attributes are absent. Kept here so the IMAP
+// syncer and the TUI viewport share one authoritative list and never drift.
+var TrashFolderNames = []string{"[Gmail]/Trash", "Trash", "Deleted Items", "Deleted Messages"}
+
 type Folder struct {
 	Name         string `json:"name"`
 	Delimiter    string `json:"delimiter"`

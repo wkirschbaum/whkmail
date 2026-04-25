@@ -2,22 +2,23 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wkirschbaum/whkmail/internal/types"
 )
 
-// prefetch returns a prefetch command for uid, or nil if already prefetched or
-// already cached with a body. The prefetched map is a reference, so the
-// mutation is visible to the caller even with a value receiver.
-func (m Model) prefetch(uid uint32) tea.Cmd {
-	key := prefetchKey{account: m.account, folder: m.folder, uid: uid}
+// prefetch returns a prefetch command for msg, or nil if already prefetched or
+// already cached with a body. Uses msg.Folder so it works correctly in the
+// Combined tab where m.folder is empty.
+func (m Model) prefetch(msg types.Message) tea.Cmd {
+	key := prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}
 	if m.prefetched[key] {
 		return nil
 	}
-	if idx := messageIndex(m.messages, m.folder, uid); idx >= 0 && m.messages[idx].BodyText != "" {
+	if msg.BodyText != "" {
 		m.prefetched[key] = true
 		return nil
 	}
 	m.prefetched[key] = true
-	return prefetchMessage(m.client, m.account, m.folder, uid)
+	return prefetchMessage(m.client, m.account, msg.Folder, msg.UID)
 }
 
 // prefetchAfter warms up to n messages starting at startIdx.
@@ -28,7 +29,7 @@ func (m Model) prefetchAfter(startIdx, n int) []tea.Cmd {
 		end = len(m.messages)
 	}
 	for i := startIdx; i < end; i++ {
-		if cmd := m.prefetch(m.messages[i].UID); cmd != nil {
+		if cmd := m.prefetch(m.messages[i]); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}
@@ -47,7 +48,7 @@ func (m Model) prefetchFirstNUnread(n int) []tea.Cmd {
 			continue
 		}
 		found++
-		if cmd := m.prefetch(msg.UID); cmd != nil {
+		if cmd := m.prefetch(msg); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}

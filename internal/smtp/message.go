@@ -1,6 +1,7 @@
 package smtp
 
 import (
+	"crypto/rand"
 	"fmt"
 	"strings"
 	"time"
@@ -89,14 +90,18 @@ func writeHeader(b *strings.Builder, key, value string) {
 	b.WriteString("\r\n")
 }
 
-// generateMessageID returns a new RFC 5322 Message-ID keyed on the
-// sender's local time and domain. Collision-resistant enough for a
-// single-sender client without pulling in a UUID dependency — the
-// timestamp alone disambiguates within the same session.
+// generateMessageID returns a new RFC 5322 Message-ID. It combines the
+// Unix timestamp with 8 random bytes so IDs are globally unique even
+// when two messages are sent within the same nanosecond.
 func generateMessageID(from string, t time.Time) string {
 	domain := "local"
 	if at := strings.LastIndex(from, "@"); at >= 0 && at < len(from)-1 {
 		domain = strings.TrimSuffix(from[at+1:], ">")
 	}
-	return fmt.Sprintf("<%d.%d@%s>", t.Unix(), t.UnixNano()%1_000_000, domain)
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		// /dev/random failure is extremely unlikely; fall back to nanoseconds.
+		return fmt.Sprintf("<%d.%d@%s>", t.Unix(), t.UnixNano(), domain)
+	}
+	return fmt.Sprintf("<%d.%x@%s>", t.Unix(), rnd, domain)
 }

@@ -32,11 +32,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.account = m.accounts[0].Account
 			m.folders = m.accounts[0].Folders
 			switch m.view {
-			case viewAccounts:
-				m.cursor = clamp(m.cursor, len(m.folders)-1)
-				m.view = viewFolders
-			case viewFolders:
-				m.cursor = clamp(m.cursor, len(m.folders)-1)
+			case viewAccounts, viewFolders:
+				// On first load jump straight to the Combined messages view.
+				// Subsequent msgStatus calls (triggered by KindSyncDone) arrive
+				// while m.view == viewMessages so they fall through without
+				// triggering a second fetch.
+				m.view = viewMessages
+				m.activeTab = 0
+				m.loading = true
+				combined := m.combinedFolderNames()
+				if len(combined) > 0 {
+					return m, tea.Batch(
+						tea.SetWindowTitle(m.windowTitle()),
+						fetchCombinedMessages(m.client, m.account, combined),
+					)
+				}
 			}
 		default:
 			for _, ac := range m.accounts {
@@ -72,6 +82,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = clamp(m.cursor, len(m.messages)-1)
 		m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
 		m.loading = false
+		return m, tea.Batch(m.prefetchOnFolderOpen()...)
+
+	case msgCombinedMessages:
+		m.err = nil
+		m.loading = false
+		var cursorUID uint32
+		if m.cursor < len(m.messages) {
+			cursorUID = m.messages[m.cursor].UID
+		}
+		merged := mergeMessages(m.messages, msg.messages)
+		m.messages, m.msgDepths = threadMessages(merged)
+		m.cursor = 0
+		for i, msg := range m.messages {
+			if msg.UID == cursorUID {
+				m.cursor = i
+				break
+			}
+		}
+		m.cursor = clamp(m.cursor, len(m.messages)-1)
+		m.msgTop = adjustViewport(m.msgTop, m.cursor, m.visibleRows(), len(m.messages))
 		return m, tea.Batch(m.prefetchOnFolderOpen()...)
 
 	case msgMessage:
@@ -196,6 +226,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// On the error screen any keypress retries the status fetch — except
+		// quit which exits immediately. This replaces the old "r to refresh"
+		// prompt now that r is bound to reply-all.
+		if m.err != nil {
+			if msg.String() == "ctrl+d" || msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.err = nil
+			m.loading = true
+			return m, fetchStatus(m.client)
+		}
 		return m.handleKey(msg)
 	}
 	return m, nil
@@ -224,13 +265,15 @@ func (m Model) handleEvent(e events.Event) (Model, tea.Cmd) {
 
 	case events.KindSyncDone:
 		m.sync = syncState{}
-		// Status always refreshes so the total-unread counter stays in
-		// sync across views. Re-fetch messages too if we're looking at a
-		// list, otherwise new arrivals would stay invisible until the
-		// user pressed r.
 		cmds := []tea.Cmd{fetchStatus(m.client)}
-		if m.view == viewMessages && m.folder != "" {
-			cmds = append(cmds, fetchMessages(m.client, m.account, m.folder))
+		if m.view == viewMessages {
+			if m.activeTab == 0 {
+				if combined := m.combinedFolderNames(); len(combined) > 0 {
+					cmds = append(cmds, fetchCombinedMessages(m.client, m.account, combined))
+				}
+			} else if m.folder != "" {
+				cmds = append(cmds, fetchMessages(m.client, m.account, m.folder))
+			}
 		}
 		return m, tea.Batch(cmds...)
 

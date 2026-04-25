@@ -181,16 +181,51 @@ func (m Model) bodyLines() []string {
 }
 
 // visibleRows returns the number of message rows the terminal can show at
-// once, accounting for the header lines and the status bar rendered around
-// the list.
+// once, accounting for the tab bar (3 lines) and the status bar.
 func (m Model) visibleRows() int {
-	// 3 = account/folder line + header line + status bar.
-	const chrome = 3
+	const chrome = 4 // tab bar top + tab bar content + separator + status bar
 	n := m.height - chrome
 	if n < 1 {
 		return 1
 	}
 	return n
+}
+
+// visibleFolders returns the folders that are not hidden, in server order.
+// Used by the folder list view and cursor clamping.
+func (m Model) visibleFolders() []types.Folder {
+	out := make([]types.Folder, 0, len(m.folders))
+	for _, f := range m.folders {
+		if folderStateFor(f.Name, m.folderStates) != FolderStateHidden {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// combinedFolderNames returns the names of folders whose state is
+// FolderStateCombined, used to build the combined-tab fetch list.
+func (m Model) combinedFolderNames() []string {
+	var out []string
+	for _, f := range m.folders {
+		if folderStateFor(f.Name, m.folderStates) == FolderStateCombined {
+			out = append(out, f.Name)
+		}
+	}
+	return out
+}
+
+// visibleTabFolders returns the indices into m.folders (1-based) for tabs
+// that should appear in the tab bar: Combined (index 0) plus one per
+// non-hidden folder.
+func (m Model) visibleTabIndices() []int {
+	tabs := []int{0}
+	for i, f := range m.folders {
+		if folderStateFor(f.Name, m.folderStates) != FolderStateHidden {
+			tabs = append(tabs, i+1)
+		}
+	}
+	return tabs
 }
 
 // adjustViewport returns a new top offset so cursor stays inside the window
@@ -231,13 +266,14 @@ func clamp(v, hi int) int {
 	return v
 }
 
-// isTrashFolder matches the common names for an account's trash mailbox.
-// Mirrors the daemon-side discoverTrashFolder fallback list so the two ends
-// agree on which folders trigger the permanent-delete confirmation prompt.
+// isTrashFolder matches the common names for an account's trash mailbox
+// so the TUI knows when to show the permanent-delete confirmation prompt.
+// Uses types.TrashFolderNames so this stays in sync with the IMAP syncer.
 func isTrashFolder(name string) bool {
-	switch name {
-	case "[Gmail]/Trash", "Trash", "Deleted Items", "Deleted Messages":
-		return true
+	for _, candidate := range types.TrashFolderNames {
+		if name == candidate {
+			return true
+		}
 	}
 	return false
 }
