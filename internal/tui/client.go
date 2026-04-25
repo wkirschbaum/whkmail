@@ -82,6 +82,34 @@ func (c *Client) PermanentDelete(ctx context.Context, account, folder string, ui
 	return c.post(ctx, account, folder, uid, "delete")
 }
 
+// MoveToFolder moves a message from srcFolder to dstFolder. Used for spam
+// marking, archiving, and other single-message moves.
+func (c *Client) MoveToFolder(ctx context.Context, account, srcFolder, dstFolder string, uid uint32) error {
+	path := fmt.Sprintf("/accounts/%s/folders/%s/messages/%d/move",
+		url.PathEscape(account), url.PathEscape(srcFolder), uid)
+	body, err := json.Marshal(struct {
+		Target string `json:"target"`
+	}{dstFolder})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("move: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 // Send hands a composed message to the daemon for SMTP submission.
 // The daemon's 60-second fetch/send timeout applies; the returned error
 // carries the HTTP body on non-2xx so the TUI can surface specific

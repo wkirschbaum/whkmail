@@ -62,6 +62,21 @@ func discoverTrashFolder(c *imapclient.Client) (string, error) {
 	return "", fmt.Errorf("could not locate Trash mailbox — neither SPECIAL-USE \\Trash nor a known fallback name was found")
 }
 
+// MoveToFolder moves a single message from srcFolder to dstFolder using an
+// interactive IMAP UID MOVE. Intended for one-shot moves (spam marking,
+// archiving); bulk moves should use TrashBatch via the bulk connection.
+func (s *Syncer) MoveToFolder(ctx context.Context, srcFolder, dstFolder string, uid uint32) error {
+	return s.withOpsConn(ctx, func(c *imapclient.Client) error {
+		if _, err := c.Select(srcFolder, nil).Wait(); err != nil {
+			return fmt.Errorf("select %s: %w", srcFolder, err)
+		}
+		if _, err := c.Move(goimap.UIDSetNum(goimap.UID(uid)), dstFolder).Wait(); err != nil {
+			return fmt.Errorf("move to %s: %w", dstFolder, err)
+		}
+		return nil
+	})
+}
+
 // TrashBatch moves one or more messages from folder into the account's Trash
 // mailbox in a single IMAP UID MOVE command. Uses the dedicated bulk
 // connection so it cannot block interactive ops (FetchBody, MarkRead). The

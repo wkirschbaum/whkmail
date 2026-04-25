@@ -201,7 +201,7 @@ func sendCmd(c *Client, account string, draft smtp.Message, sourceFolder, key st
 		SourceFolder: sourceFolder,
 	}
 	return func() tea.Msg {
-		ctx, cancel := contextWithSendTimeout()
+		ctx, cancel := sendCtx()
 		defer cancel()
 		if err := c.Send(ctx, account, req); err != nil {
 			return msgErr{fmt.Errorf("send: %w", err)}

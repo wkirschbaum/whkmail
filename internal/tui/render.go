@@ -246,7 +246,7 @@ func (m Model) renderMessage() string {
 	var b strings.Builder
 
 	if m.account != "" {
-		b.WriteString(styleDim.Render(m.account+" / "+m.folder) + "\n")
+		b.WriteString(styleDim.Render(m.account+" / "+msg.Folder) + "\n")
 	}
 	b.WriteString(styleHeader.Render(msg.Subject) + "\n")
 	b.WriteString(styleDim.Render("From: "+msg.From) + "\n")
@@ -256,6 +256,7 @@ func (m Model) renderMessage() string {
 	b.WriteString(styleDim.Render("Date: "+msg.Date.Format("Mon, 02 Jan 2006 15:04")) + "\n")
 	b.WriteString(styleDim.Render(strings.Repeat("─", 40)) + "\n\n")
 
+	bodyErrKey := prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}
 	switch {
 	case msg.BodyText != "":
 		lines := m.bodyLines()
@@ -268,9 +269,8 @@ func (m Model) renderMessage() string {
 		if start < len(lines) {
 			b.WriteString(strings.Join(lines[start:end], "\n"))
 		}
-	case m.bodyErr[prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}] != "":
-		reason := m.bodyErr[prefetchKey{account: m.account, folder: msg.Folder, uid: msg.UID}]
-		b.WriteString(styleMuted.Render("Failed to load body: " + reason))
+	case m.bodyErr[bodyErrKey] != "":
+		b.WriteString(styleMuted.Render("Failed to load body: " + m.bodyErr[bodyErrKey]))
 	case msg.BodyFetched:
 		b.WriteString(styleDim.Render("(no text content)"))
 	default:

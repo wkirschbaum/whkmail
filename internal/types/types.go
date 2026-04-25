@@ -11,6 +11,11 @@ const DefaultMarkReadDelay = 2 * time.Second
 // syncer and the TUI viewport share one authoritative list and never drift.
 var TrashFolderNames = []string{"[Gmail]/Trash", "Trash", "Deleted Items", "Deleted Messages"}
 
+// SpamFolderNames is the ordered list of literal mailbox names used as the
+// Spam/Junk folder when SPECIAL-USE \Junk is absent. Kept alongside
+// TrashFolderNames so callers never hard-code provider-specific names.
+var SpamFolderNames = []string{"[Gmail]/Spam", "Spam", "Junk", "Junk Mail", "Junk E-Mail"}
+
 type Folder struct {
 	Name         string `json:"name"`
 	Delimiter    string `json:"delimiter"`

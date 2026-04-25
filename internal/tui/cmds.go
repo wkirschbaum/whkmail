@@ -21,16 +21,21 @@ const (
 	sendTimeout    = 90 * time.Second
 )
 
-// contextWithSendTimeout builds the per-send context. Longer than
-// requestTimeout because a submission can include a lot of body bytes
-// and Gmail's SMTP submission is slower than its IMAP responses.
-func contextWithSendTimeout() (context.Context, context.CancelFunc) {
+// requestCtx returns a context pre-armed with requestTimeout. Every
+// outbound daemon call uses this so the timeout is defined in one place.
+func requestCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), requestTimeout)
+}
+
+// sendCtx returns a context pre-armed with sendTimeout. Used for SMTP
+// submission which is slower than ordinary IMAP ops.
+func sendCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), sendTimeout)
 }
 
 func fetchStatus(c *Client) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		s, err := c.Status(ctx)
 		if err != nil {
@@ -42,7 +47,7 @@ func fetchStatus(c *Client) tea.Cmd {
 
 func fetchMessages(c *Client, account, folder string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		r, err := c.Messages(ctx, account, folder)
 		if err != nil {
@@ -54,7 +59,7 @@ func fetchMessages(c *Client, account, folder string) tea.Cmd {
 
 func fetchMessage(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		r, err := c.Message(ctx, account, folder, uid)
 		if err != nil {
@@ -69,7 +74,7 @@ func fetchMessage(c *Client, account, folder string, uid uint32) tea.Cmd {
 // TUI. Success merges into the local message cache via msgPrefetched.
 func prefetchMessage(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		r, err := c.Message(ctx, account, folder, uid)
 		if err != nil {
@@ -82,7 +87,7 @@ func prefetchMessage(c *Client, account, folder string, uid uint32) tea.Cmd {
 
 func markReadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		if err := c.MarkRead(ctx, account, folder, uid); err != nil {
 			return msgErr{err}
@@ -97,7 +102,7 @@ func markReadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 // The next sync will reconcile the server-side flag.
 func autoMarkReadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		if err := c.MarkRead(ctx, account, folder, uid); err != nil {
 			return nil
@@ -108,7 +113,7 @@ func autoMarkReadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 
 func markUnreadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		if err := c.MarkUnread(ctx, account, folder, uid); err != nil {
 			return msgErr{err}
@@ -131,7 +136,7 @@ func saveStyleCmd(style InputStyle) tea.Cmd {
 
 func trashCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		if err := c.Trash(ctx, account, folder, uid); err != nil {
 			return msgErr{err}
@@ -142,7 +147,7 @@ func trashCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 
 func permanentDeleteCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		if err := c.PermanentDelete(ctx, account, folder, uid); err != nil {
 			return msgErr{err}
@@ -160,7 +165,7 @@ func fetchCombinedMessages(c *Client, account string, folders []string) tea.Cmd 
 		return func() tea.Msg { return msgCombinedMessages{} }
 	}
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := requestCtx()
 		defer cancel()
 		var (
 			mu  sync.Mutex

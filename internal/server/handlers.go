@@ -25,6 +25,7 @@ func BuildMux(st *State) *http.ServeMux {
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/unread", st.HandleMarkUnread)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/trash", st.HandleTrash)
 	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/delete", st.HandlePermanentDelete)
+	mux.HandleFunc("POST /accounts/{account}/folders/{folder}/messages/{uid}/move", st.HandleMove)
 	mux.HandleFunc("POST /accounts/{account}/send", st.HandleSend)
 	mux.HandleFunc("DELETE /accounts/{account}", st.HandleRemoveAccount)
 	mux.HandleFunc("GET /events", st.handleSSE)
@@ -136,6 +137,45 @@ func (st *State) HandleTrash(w http.ResponseWriter, r *http.Request) {
 // async + backpressure semantics as HandleTrash.
 func (st *State) HandlePermanentDelete(w http.ResponseWriter, r *http.Request) {
 	st.enqueueMutation(w, r, st.enqueuePermanentDelete)
+}
+
+// HandleMove moves a message from its current folder to a target folder in
+// one inline IMAP UID MOVE. The target folder name is passed as a JSON body
+// {"target":"..."} so arbitrary folder names (including those containing
+// slashes) round-trip cleanly without extra URL encoding.
+func (st *State) HandleMove(w http.ResponseWriter, r *http.Request) {
+	ac, ok := st.accountFromRequest(w, r)
+	if !ok {
+		return
+	}
+	if ac.provider == nil {
+		http.Error(w, "no provider", http.StatusServiceUnavailable)
+		return
+	}
+	folder := r.PathValue("folder")
+	uid, err := strconv.ParseUint(r.PathValue("uid"), 10, 32)
+	if err != nil {
+		http.Error(w, "invalid uid", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	var req struct {
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Target == "" {
+		http.Error(w, "invalid body: expected {\"target\":\"<folder>\"}", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), OpRequestTimeout)
+	defer cancel()
+	if err := ac.provider.MoveToFolder(ctx, folder, req.Target, uint32(uid)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := ac.store.DeleteMessage(r.Context(), folder, uint32(uid)); err != nil {
+		slog.Warn("HandleMove: delete from store", "account", ac.email, "folder", folder, "uid", uid, "err", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // enqueueMutation is the shared plumbing for HandleTrash and
@@ -354,7 +394,11 @@ func (st *State) mutateMessage(w http.ResponseWriter, r *http.Request, op func(a
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "internal error: failed to encode response", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	//nolint:errcheck
-	json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(b)
 }

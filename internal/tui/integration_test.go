@@ -111,9 +111,9 @@ func (p *fixtureProvider) MarkRead(_ context.Context, folder string, uid uint32)
 	return fn(folder, uid)
 }
 
-func (p *fixtureProvider) MarkUnread(_ context.Context, _ string, _ uint32) error {
-	return nil
-}
+func (p *fixtureProvider) MarkUnread(_ context.Context, _ string, _ uint32) error { return nil }
+
+func (p *fixtureProvider) MoveToFolder(_ context.Context, _, _ string, _ uint32) error { return nil }
 
 func (p *fixtureProvider) marks() []readCall {
 	p.mu.Lock()

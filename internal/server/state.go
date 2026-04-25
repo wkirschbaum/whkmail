@@ -33,6 +33,11 @@ type MailProvider interface {
 	MarkRead(ctx context.Context, folder string, uid uint32) error
 	MarkUnread(ctx context.Context, folder string, uid uint32) error
 
+	// MoveToFolder moves a single message from srcFolder to dstFolder.
+	// Used for one-off moves (spam marking, archiving). Bulk moves use
+	// TrashBatch. The caller is responsible for updating the local cache.
+	MoveToFolder(ctx context.Context, srcFolder, dstFolder string, uid uint32) error
+
 	// Trash moves a message from folder into the account's designated
 	// trash/bin mailbox. For Gmail this is the [Gmail]/Trash mailbox — it
 	// differs from \Deleted+EXPUNGE semantics in classic IMAP.
