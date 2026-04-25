@@ -87,29 +87,86 @@ func (s *Syncer) run(ctx context.Context) error {
 	return s.idle(ctx, c)
 }
 
+// folderWork holds one entry of work for syncFolders: the server's list data
+// paired with what we have in the local cache for delta detection.
+type folderWork struct {
+	mb             *goimap.ListData
+	storedValidity uint32
+	storedUIDNext  uint32
+}
+
 func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 	// Request SPECIAL-USE attributes so we can skip virtual aggregate folders
-	// like [Gmail]/All Mail (\All) that contain only duplicates of messages
-	// already synced from their canonical folders.
+	// like [Gmail]/All Mail (\All) that duplicate messages from other folders.
 	data, err := c.List("", "*", &goimap.ListOptions{ReturnSpecialUse: true}).Collect()
 	if err != nil {
 		return err
 	}
-	total := len(data)
-	for i, mb := range data {
-		s.bus.Publish(events.SyncProgressEvent(s.email, mb.Mailbox, i+1, total))
-		f := types.Folder{
-			Name:      mb.Mailbox,
-			Delimiter: string(mb.Delim),
-		}
+
+	// Upsert all folder records first so discovery (spam, trash, sent) works
+	// even for folders we skip syncing.
+	for _, mb := range data {
+		f := types.Folder{Name: mb.Mailbox, Delimiter: string(mb.Delim)}
 		if err := s.store.UpsertFolder(ctx, f); err != nil {
 			slog.Warn("upsert folder", "name", f.Name, "err", err)
 		}
+	}
+
+	// Build the work list: exclude virtual aggregate folders.
+	work := make([]folderWork, 0, len(data))
+	for _, mb := range data {
 		if skipMailboxSync(*mb) {
 			continue
 		}
-		if err := s.syncMailbox(ctx, c, mb.Mailbox); err != nil {
-			slog.Warn("sync mailbox", "name", mb.Mailbox, "err", err)
+		sv, sn, err := s.store.GetFolderSync(ctx, mb.Mailbox)
+		if err != nil {
+			slog.Warn("get folder sync", "name", mb.Mailbox, "err", err)
+		}
+		work = append(work, folderWork{mb: mb, storedValidity: sv, storedUIDNext: sn})
+	}
+
+	// Pipeline STATUS commands for all previously-synced folders. Each
+	// command is sent on the wire immediately; responses arrive in tag order.
+	// One RTT covers all STATUS calls regardless of folder count, replacing
+	// the old sequential SELECT-per-folder that dominated restart time on
+	// accounts with many labels.
+	statusOpts := &goimap.StatusOptions{UIDValidity: true, UIDNext: true}
+	statusCmds := make([]*imapclient.StatusCommand, len(work))
+	for i, fw := range work {
+		if fw.storedValidity != 0 {
+			statusCmds[i] = c.Status(fw.mb.Mailbox, statusOpts)
+		}
+	}
+
+	// Collect STATUS responses. Must be done before issuing SELECT (syncMailbox)
+	// so there are no unresolved pipelined commands when we change selected mailbox.
+	statuses := make([]*goimap.StatusData, len(work))
+	for i := range work {
+		if statusCmds[i] == nil {
+			continue
+		}
+		st, err := statusCmds[i].Wait()
+		if err != nil {
+			slog.Warn("status mailbox", "name", work[i].mb.Mailbox, "err", err)
+			// nil status → fall through to full syncMailbox below
+		} else {
+			statuses[i] = st
+		}
+	}
+
+	// Sync only folders that STATUS says have changed (or that we've never
+	// seen, or where STATUS failed). Folders with matching UIDValidity and no
+	// new UIDs are skipped entirely — no SELECT, no FETCH, no latency.
+	total := len(work)
+	for i, fw := range work {
+		s.bus.Publish(events.SyncProgressEvent(s.email, fw.mb.Mailbox, i+1, total))
+		st := statuses[i]
+		if st != nil && st.UIDValidity == fw.storedValidity &&
+			goimap.UID(fw.storedUIDNext) >= st.UIDNext {
+			continue // nothing new
+		}
+		if err := s.syncMailbox(ctx, c, fw.mb.Mailbox); err != nil {
+			slog.Warn("sync mailbox", "name", fw.mb.Mailbox, "err", err)
 		}
 	}
 	return nil
