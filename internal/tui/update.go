@@ -210,7 +210,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.message.Unread {
 			return m, nil
 		}
-		return m, markReadCmd(m.client, msg.account, msg.folder, msg.uid)
+		return m, autoMarkReadCmd(m.client, msg.account, msg.folder, msg.uid)
 
 	case msgEvent:
 		next, cmd := m.handleEvent(events.Event(msg))

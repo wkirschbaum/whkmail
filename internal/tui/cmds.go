@@ -91,6 +91,21 @@ func markReadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	}
 }
 
+// autoMarkReadCmd is the silent auto-mark-read variant used by tickMarkRead.
+// Errors are swallowed — a background flag update that times out or hits a
+// transient network issue must not interrupt the user with an error overlay.
+// The next sync will reconcile the server-side flag.
+func autoMarkReadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		if err := c.MarkRead(ctx, account, folder, uid); err != nil {
+			return nil
+		}
+		return msgMarkedRead{account: account, folder: folder, uid: uid}
+	}
+}
+
 func markUnreadCmd(c *Client, account, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)

@@ -154,7 +154,7 @@ func backoffDelay(failures int) time.Duration {
 	}
 	const (
 		base    = 500 * time.Millisecond
-		ceiling = 30 * time.Second
+		ceiling = 20 * time.Second // must stay below requestTimeout so the op gets headroom
 	)
 	shift := failures - 2
 	if shift > 6 {
