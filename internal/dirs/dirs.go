@@ -29,6 +29,7 @@ func DBFile() string          { return filepath.Join(StateDir(), "mail.db") }
 func LockFile() string        { return filepath.Join(StateDir(), "whkmaild.lock") }
 func SocketFile() string      { return filepath.Join(StateDir(), "whkmaild.sock") }
 func TokenFile() string       { return filepath.Join(StateDir(), "token.json") }
+func LogFile() string         { return filepath.Join(StateDir(), "daemon.log") }
 
 // safeEmail converts an email address into a filesystem-safe directory name
 // by replacing '@' and '.' with '_'.

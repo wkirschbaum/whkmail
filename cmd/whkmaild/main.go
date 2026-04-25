@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -41,15 +42,25 @@ func resolveDBPath(email string) string {
 func main() {
 	checkSetup()
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	// Write logs to both stderr (for journald / terminal) and a persistent
+	// file so post-hoc timing inspection is easy.
+	if err := os.MkdirAll(dirs.StateDir(), 0o700); err != nil {
+		slog.Error("create state dir (pre-log)", "err", err)
+		os.Exit(1)
+	}
+	logF, err := os.OpenFile(dirs.LogFile(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		slog.Error("open log file", "path", dirs.LogFile(), "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = logF.Close() }()
+	logOpts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, logF), logOpts)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := os.MkdirAll(dirs.StateDir(), 0o700); err != nil {
-		slog.Error("create state dir", "err", err)
-		os.Exit(1)
-	}
+	slog.Info("whkmaild starting")
 
 	lockF, err := acquireLock()
 	if err != nil {

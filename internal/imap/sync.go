@@ -70,19 +70,25 @@ func (s *Syncer) Run(ctx context.Context) {
 }
 
 func (s *Syncer) run(ctx context.Context) error {
+	t0 := time.Now()
+	slog.Info("imap: connecting", "account", s.email)
 	c, err := s.connect(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = c.Close() }()
+	slog.Info("imap: connected", "account", s.email, "elapsed", time.Since(t0).Round(time.Millisecond))
 
 	s.bus.Publish(events.SyncStartedEvent(s.email))
 
+	t1 := time.Now()
 	if err := s.syncFolders(ctx, c); err != nil {
 		return fmt.Errorf("sync folders: %w", err)
 	}
+	slog.Info("imap: syncFolders done", "account", s.email, "elapsed", time.Since(t1).Round(time.Millisecond))
 
 	s.bus.Publish(events.SyncDoneEvent(s.email))
+	slog.Info("imap: startup complete", "account", s.email, "total_elapsed", time.Since(t0).Round(time.Millisecond))
 
 	return s.idle(ctx, c)
 }
@@ -98,24 +104,29 @@ type folderWork struct {
 func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 	// Request SPECIAL-USE attributes so we can skip virtual aggregate folders
 	// like [Gmail]/All Mail (\All) that duplicate messages from other folders.
+	tList := time.Now()
 	data, err := c.List("", "*", &goimap.ListOptions{ReturnSpecialUse: true}).Collect()
 	if err != nil {
 		return err
 	}
+	slog.Info("imap: LIST done", "account", s.email, "folders", len(data), "elapsed", time.Since(tList).Round(time.Millisecond))
 
 	// Upsert all folder records first so discovery (spam, trash, sent) works
 	// even for folders we skip syncing.
+	tUpsert := time.Now()
 	for _, mb := range data {
 		f := types.Folder{Name: mb.Mailbox, Delimiter: string(mb.Delim)}
 		if err := s.store.UpsertFolder(ctx, f); err != nil {
 			slog.Warn("upsert folder", "name", f.Name, "err", err)
 		}
 	}
+	slog.Info("imap: folders upserted", "account", s.email, "elapsed", time.Since(tUpsert).Round(time.Millisecond))
 
 	// Build the work list: exclude virtual aggregate folders.
 	work := make([]folderWork, 0, len(data))
 	for _, mb := range data {
 		if skipMailboxSync(*mb) {
+			slog.Info("imap: skipping virtual folder", "account", s.email, "folder", mb.Mailbox)
 			continue
 		}
 		sv, sn, err := s.store.GetFolderSync(ctx, mb.Mailbox)
@@ -124,19 +135,24 @@ func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 		}
 		work = append(work, folderWork{mb: mb, storedValidity: sv, storedUIDNext: sn})
 	}
+	slog.Info("imap: work list built", "account", s.email, "total_folders", len(data), "to_check", len(work))
 
 	// Pipeline STATUS commands for all previously-synced folders. Each
 	// command is sent on the wire immediately; responses arrive in tag order.
 	// One RTT covers all STATUS calls regardless of folder count, replacing
 	// the old sequential SELECT-per-folder that dominated restart time on
 	// accounts with many labels.
+	tStatus := time.Now()
 	statusOpts := &goimap.StatusOptions{UIDValidity: true, UIDNext: true}
 	statusCmds := make([]*imapclient.StatusCommand, len(work))
+	nSent := 0
 	for i, fw := range work {
 		if fw.storedValidity != 0 {
 			statusCmds[i] = c.Status(fw.mb.Mailbox, statusOpts)
+			nSent++
 		}
 	}
+	slog.Info("imap: STATUS commands sent", "account", s.email, "count", nSent)
 
 	// Collect STATUS responses. Must be done before issuing SELECT (syncMailbox)
 	// so there are no unresolved pipelined commands when we change selected mailbox.
@@ -153,11 +169,13 @@ func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 			statuses[i] = st
 		}
 	}
+	slog.Info("imap: STATUS responses collected", "account", s.email, "elapsed", time.Since(tStatus).Round(time.Millisecond))
 
 	// Sync only folders that STATUS says have changed (or that we've never
 	// seen, or where STATUS failed). Folders with matching UIDValidity and no
 	// new UIDs are skipped entirely — no SELECT, no FETCH, no latency.
 	total := len(work)
+	nSynced := 0
 	for i, fw := range work {
 		s.bus.Publish(events.SyncProgressEvent(s.email, fw.mb.Mailbox, i+1, total))
 		st := statuses[i]
@@ -165,10 +183,15 @@ func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 			goimap.UID(fw.storedUIDNext) >= st.UIDNext {
 			continue // nothing new
 		}
+		tMbox := time.Now()
 		if err := s.syncMailbox(ctx, c, fw.mb.Mailbox); err != nil {
 			slog.Warn("sync mailbox", "name", fw.mb.Mailbox, "err", err)
+		} else {
+			slog.Info("imap: syncMailbox", "account", s.email, "folder", fw.mb.Mailbox, "elapsed", time.Since(tMbox).Round(time.Millisecond))
 		}
+		nSynced++
 	}
+	slog.Info("imap: sync pass complete", "account", s.email, "checked", len(work), "synced", nSynced)
 	return nil
 }
 
