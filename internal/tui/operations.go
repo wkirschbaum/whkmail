@@ -110,6 +110,9 @@ func (m *Model) removeLocalMessage(folder string, uid uint32) {
 	}
 	msg := m.messages[idx]
 	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
+	if idx < len(m.msgDepths) {
+		m.msgDepths = append(m.msgDepths[:idx], m.msgDepths[idx+1:]...)
+	}
 	if m.cursor >= len(m.messages) {
 		m.cursor = len(m.messages) - 1
 	}

@@ -33,7 +33,11 @@ func OpenSQLite(path string) (*SQLite, error) {
 		return nil, fmt.Errorf("set pragmas: %w", err)
 	}
 	s := &SQLite{db: db}
-	return s, s.migrate()
+	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }

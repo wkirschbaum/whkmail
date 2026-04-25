@@ -305,9 +305,9 @@ func (m Model) handleEvent(e events.Event) (Model, tea.Cmd) {
 		}
 		delete(m.bodyErr, key)
 		viewing := m.view == viewMessage && m.message != nil &&
-			m.message.UID == e.UID && m.folder == e.Folder
+			m.message.UID == e.UID && m.message.Folder == e.Folder
 		if viewing {
-			return m, fetchMessage(m.client, m.account, m.folder, e.UID)
+			return m, fetchMessage(m.client, m.account, e.Folder, e.UID)
 		}
 		if m.prefetched[key] {
 			return m, prefetchMessage(m.client, m.account, e.Folder, e.UID)
