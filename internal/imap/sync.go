@@ -195,13 +195,15 @@ func (s *Syncer) syncFolders(ctx context.Context, c *imapclient.Client) error {
 	return nil
 }
 
-// skipMailboxSync returns true for virtual aggregate mailboxes that contain
-// only copies of messages already present in other folders. Syncing them
-// wastes IMAP round-trips and inflates the local cache with duplicates.
+// skipMailboxSync returns true for mailboxes that should not be synced.
 // The folder record is still upserted so discovery (spam, trash, sent) works.
+//
+// Skipped:
+//   - \Noselect — namespace prefix folders like [Gmail] that cannot be opened
+//   - \All      — virtual aggregate (e.g. [Gmail]/All Mail) that duplicates everything
 func skipMailboxSync(mb goimap.ListData) bool {
 	for _, attr := range mb.Attrs {
-		if attr == goimap.MailboxAttrAll {
+		if attr == goimap.MailboxAttrNoSelect || attr == goimap.MailboxAttrAll {
 			return true
 		}
 	}
