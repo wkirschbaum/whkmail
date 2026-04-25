@@ -79,7 +79,10 @@ func (s *Syncer) run(ctx context.Context) error {
 	defer func() { _ = c.Close() }()
 	slog.Info("imap: connected", "account", s.email, "elapsed", time.Since(t0).Round(time.Millisecond))
 
-	s.bus.Publish(events.SyncStartedEvent(s.email))
+	// Signal the TUI immediately so it shows cached SQLite data without waiting
+	// for the full catch-up sync. The sync runs silently in the background;
+	// a second SyncDone fires when it finishes so the TUI refreshes with fresh data.
+	s.bus.Publish(events.SyncDoneEvent(s.email))
 
 	t1 := time.Now()
 	if err := s.syncFolders(ctx, c); err != nil {
